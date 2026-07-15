@@ -144,7 +144,7 @@ func (s *LocalStudioFileStorage) ReadJSON(ctx context.Context, relativePath stri
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := json.NewDecoder(f).Decode(value); err != nil {
 		return fmt.Errorf("decode studio json: %w", err)
 	}

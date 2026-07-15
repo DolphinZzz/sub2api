@@ -43,7 +43,7 @@ func (r *studioRepository) ListSessions(ctx context.Context, userID int64) ([]se
 	if err != nil {
 		return nil, fmt.Errorf("query studio sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	sessions := make([]service.StudioSession, 0)
 	for rows.Next() {
@@ -130,7 +130,7 @@ func (r *studioRepository) ListMessages(ctx context.Context, userID int64, sessi
 	if err != nil {
 		return nil, fmt.Errorf("query studio messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	messages := make([]service.StudioMessage, 0)
 	for rows.Next() {
@@ -151,7 +151,7 @@ func (r *studioRepository) CreateRequest(ctx context.Context, request *service.S
 	if err != nil {
 		return fmt.Errorf("begin studio request transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := lockStudioSession(ctx, tx, request.SessionID); err != nil {
 		return err
 	}
@@ -282,7 +282,7 @@ func (r *studioRepository) MarkSessionDeleting(ctx context.Context, userID int64
 	if err != nil {
 		return false, fmt.Errorf("begin studio delete transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := lockStudioSession(ctx, tx, id); err != nil {
 		return false, err
 	}
@@ -353,7 +353,7 @@ func (r *studioRepository) ListCleanupCandidates(ctx context.Context, now time.T
 	if err != nil {
 		return nil, fmt.Errorf("query studio cleanup candidates: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	sessions := make([]service.StudioSession, 0)
 	for rows.Next() {

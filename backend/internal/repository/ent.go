@@ -143,7 +143,7 @@ func ensurePostgresDatabase(ctx context.Context, dbCfg config.DatabaseConfig, ti
 	if err != nil {
 		return fmt.Errorf("open bootstrap database: %w", err)
 	}
-	defer bootstrapDB.Close()
+	defer func() { _ = bootstrapDB.Close() }()
 	if err := bootstrapDB.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping bootstrap database: %w", err)
 	}

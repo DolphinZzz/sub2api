@@ -129,7 +129,7 @@ func (h *StudioHandler) AssetContent(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	c.Header("Content-Type", asset.MIMEType)
 	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename=%q`, service.StudioAssetFilename(asset)))
 	c.Header("X-Content-Type-Options", "nosniff")
