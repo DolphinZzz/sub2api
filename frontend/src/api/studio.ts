@@ -297,7 +297,7 @@ function imageSizeForAspectRatio(size: string, aspectRatio: string): string {
 
 export function buildImagePayload(model: string, prompt: string, options: StudioImageOptions) {
   const content: Array<Record<string, string>> = [{ type: 'input_text', text: prompt }]
-  for (const imageUrl of options.referenceImages) content.push({ type: 'input_image', image_url: imageUrl })
+  for (const imageUrl of options.referenceImages.slice(0, 5)) content.push({ type: 'input_image', image_url: imageUrl })
   const tool = {
     type: 'image_generation',
     action: options.action,

@@ -87,7 +87,17 @@
             <div class="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-3 xl:max-w-3xl">
               <label class="min-w-0">
                 <span class="mb-1 block text-[11px] font-medium text-gray-500 dark:text-dark-400">{{ t('studio.endpoint') }}</span>
-                <Select v-model="selectedEndpoint" :options="endpointOptions" class="w-full" />
+                <Select v-model="selectedEndpoint" :options="endpointOptions" class="w-full">
+                  <template #selected="{ option }">
+                    <span class="block truncate">{{ option?.label || t('studio.defaultEndpoint') }}</span>
+                  </template>
+                  <template #option="{ option }">
+                    <span class="min-w-0 flex-1">
+                      <span class="block truncate text-sm">{{ option.label }}</span>
+                      <span class="block truncate text-xs text-gray-400">{{ option.description }}</span>
+                    </span>
+                  </template>
+                </Select>
               </label>
               <label class="min-w-0">
                 <span class="mb-1 block text-[11px] font-medium text-gray-500 dark:text-dark-400">{{ t('studio.apiKeyQuota') }}</span>
@@ -132,22 +142,25 @@
                 <span class="mb-1 block text-[11px] font-medium text-gray-500 dark:text-dark-400">{{ t('studio.reference') }}</span>
                 <button
                   type="button"
-                  class="flex h-[42px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 px-2 text-xs font-medium text-gray-600 hover:border-primary-400 hover:text-primary-600 dark:border-dark-600 dark:text-gray-300"
+                  class="flex h-[42px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 px-2 text-xs font-medium text-gray-600 hover:border-primary-400 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-dark-600 dark:text-gray-300"
+                  :disabled="referenceImages.length >= maxReferenceImages"
                   @click="referenceInput?.click()"
                 >
-                  <Icon :name="referencePreview ? 'check' : 'upload'" size="sm" />
-                  <span class="truncate">{{ referencePreview ? referenceFileName : t('studio.upload') }}</span>
+                  <Icon :name="referenceImages.length ? 'check' : 'upload'" size="sm" />
+                  <span class="truncate">{{ referenceImages.length ? t('studio.referenceCount', { count: referenceImages.length, max: maxReferenceImages }) : t('studio.upload') }}</span>
                 </button>
-                <input ref="referenceInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp" @change="onReferenceSelected">
+                <input ref="referenceInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp" multiple @change="onReferenceSelected">
               </label>
             </div>
 
-            <div v-if="referencePreview" class="mt-2 flex items-center gap-2">
-              <img :src="referencePreview" :alt="t('studio.reference')" class="h-12 w-12 rounded-lg border border-gray-200 object-cover dark:border-dark-600">
-              <span class="min-w-0 flex-1 truncate text-xs text-gray-500 dark:text-dark-400">{{ referenceFileName }}</span>
-              <button type="button" class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-red-500 dark:hover:bg-dark-800" :title="t('studio.removeReference')" @click="clearReference">
-                <Icon name="x" size="sm" />
-              </button>
+            <div v-if="referenceImages.length" class="mt-2 flex flex-wrap gap-2">
+              <div v-for="(reference, index) in referenceImages" :key="reference.id" class="flex min-w-0 max-w-44 items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1.5 dark:border-dark-700 dark:bg-dark-800">
+                <img :src="reference.preview" :alt="reference.fileName" class="h-10 w-10 flex-none rounded-md object-cover">
+                <span class="min-w-0 flex-1 truncate text-xs text-gray-500 dark:text-dark-400" :title="reference.fileName">{{ reference.fileName }}</span>
+                <button type="button" class="flex-none rounded-md p-1 text-gray-400 hover:bg-gray-200 hover:text-red-500 dark:hover:bg-dark-700" :title="t('studio.removeReference')" @click="removeReference(index)">
+                  <Icon name="x" size="sm" />
+                </button>
+              </div>
             </div>
           </div>
         </header>
@@ -257,7 +270,7 @@
                 <Icon :name="mode === 'image' ? 'sparkles' : 'arrowUp'" size="sm" />
               </button>
             </div>
-            <p v-if="mode === 'image' && imageAction === 'edit' && !referencePreview" class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">{{ t('studio.editNeedsImage') }}</p>
+            <p v-if="mode === 'image' && imageAction === 'edit' && !referenceImages.length" class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">{{ t('studio.editNeedsImage') }}</p>
           </div>
         </footer>
       </section>
@@ -318,8 +331,9 @@ const imageBackground = ref<'auto' | 'transparent'>('auto')
 const outputFormat = ref<'png' | 'jpeg' | 'webp'>('png')
 const imageCount = ref(1)
 const prompt = ref('')
-const referencePreview = ref('')
-const referenceFileName = ref('')
+const maxReferenceImages = 5
+const supportedReferenceTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
+const referenceImages = ref<Array<{ id: string; preview: string; fileName: string }>>([])
 const referenceInput = ref<HTMLInputElement | null>(null)
 const promptInput = ref<HTMLTextAreaElement | null>(null)
 const messagesContainer = ref<HTMLElement | null>(null)
@@ -362,12 +376,23 @@ const formatOptions = [
 
 const endpointOptions = computed(() => {
   const settings = appStore.cachedPublicSettings
-  const options: Array<{ value: string; label: string }> = []
-  const defaultEndpoint = settings?.api_base_url || buildGatewayUrl('/v1')
-  if (defaultEndpoint) options.push({ value: defaultEndpoint, label: settings?.site_name || t('studio.defaultEndpoint') })
+  const options: Array<{ value: string; label: string; description: string }> = []
+  const defaultEndpoint = (settings?.api_base_url || buildGatewayUrl('/v1')).trim()
+  if (defaultEndpoint) {
+    options.push({
+      value: defaultEndpoint,
+      label: t('studio.defaultEndpoint'),
+      description: defaultEndpoint,
+    })
+  }
   for (const item of settings?.custom_endpoints || []) {
-    if (!options.some((option) => option.value === item.endpoint)) {
-      options.push({ value: item.endpoint, label: item.name || item.endpoint })
+    const endpoint = item.endpoint.trim()
+    if (endpoint && !options.some((option) => option.value === endpoint)) {
+      options.push({
+        value: endpoint,
+        label: item.name.trim() || endpoint,
+        description: item.description.trim() ? `${endpoint} · ${item.description.trim()}` : endpoint,
+      })
     }
   }
   return options
@@ -384,7 +409,7 @@ const apiKeyOptions = computed(() => apiKeys.value.map((key) => {
 
 const canSubmit = computed(() => {
   if (!prompt.value.trim() || !selectedKey.value || !selectedEndpoint.value) return false
-  return mode.value !== 'image' || imageAction.value !== 'edit' || Boolean(referencePreview.value)
+  return mode.value !== 'image' || imageAction.value !== 'edit' || referenceImages.value.length > 0
 })
 
 function makeId(prefix: string) {
@@ -552,7 +577,7 @@ async function generateImages() {
             quality: imageQuality.value,
             background: imageBackground.value,
             outputFormat: outputFormat.value,
-            referenceImages: referencePreview.value ? [referencePreview.value] : [],
+            referenceImages: referenceImages.value.map((reference) => reference.preview),
           }),
         },
         {},
@@ -588,29 +613,52 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : t('studio.requestFailed')
 }
 
-function onReferenceSelected(event: Event) {
+async function onReferenceSelected(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  if (!file.type.startsWith('image/')) {
-    appStore.showError(t('studio.invalidImage'))
-    return
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (!files.length) return
+
+  const next: Array<{ id: string; preview: string; fileName: string }> = []
+  let limitReached = false
+  for (const file of files) {
+    if (referenceImages.value.length + next.length >= maxReferenceImages) {
+      limitReached = true
+      break
+    }
+    if (!supportedReferenceTypes.has(file.type)) {
+      appStore.showError(t('studio.invalidImage'))
+      continue
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      appStore.showError(t('studio.imageTooLarge'))
+      continue
+    }
+    try {
+      next.push({ id: crypto.randomUUID(), preview: await readReferenceImage(file), fileName: file.name })
+    } catch {
+      appStore.showError(t('studio.invalidImage'))
+    }
   }
-  if (file.size > 20 * 1024 * 1024) {
-    appStore.showError(t('studio.imageTooLarge'))
-    return
-  }
-  const reader = new FileReader()
-  reader.onload = () => {
-    referencePreview.value = String(reader.result || '')
-    referenceFileName.value = file.name
-  }
-  reader.readAsDataURL(file)
+  referenceImages.value = [...referenceImages.value, ...next]
+  if (limitReached) appStore.showError(t('studio.referenceLimit', { max: maxReferenceImages }))
+}
+
+function readReferenceImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error || new Error('Failed to read reference image'))
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.readAsDataURL(file)
+  })
+}
+
+function removeReference(index: number) {
+  referenceImages.value = referenceImages.value.filter((_, currentIndex) => currentIndex !== index)
 }
 
 function clearReference() {
-  referencePreview.value = ''
-  referenceFileName.value = ''
+  referenceImages.value = []
   if (referenceInput.value) referenceInput.value.value = ''
 }
 
@@ -737,6 +785,7 @@ watch(imageBackground, (background) => {
 })
 
 onMounted(async () => {
+  await appStore.fetchPublicSettings(true)
   sessionsLoading.value = true
   try {
     await clearLegacyStudioStorage()

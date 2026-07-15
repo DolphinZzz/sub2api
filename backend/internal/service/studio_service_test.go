@@ -187,6 +187,8 @@ func (r *studioServiceRepoStub) ListCleanupCandidates(context.Context, time.Time
 type studioServiceStorageStub struct {
 	quarantined   []string
 	requestWrites []StudioRequest
+	outputData    []byte
+	outputFormat  string
 	responseErr   error
 }
 
@@ -215,7 +217,9 @@ func (*studioServiceStorageStub) WriteGeneration(context.Context, int64, string,
 func (*studioServiceStorageStub) WriteInput(context.Context, int64, string, string, string, []byte) (string, error) {
 	return "input.png", nil
 }
-func (*studioServiceStorageStub) WriteOutput(context.Context, int64, string, string, string, []byte) (string, error) {
+func (s *studioServiceStorageStub) WriteOutput(_ context.Context, _ int64, _ string, _ string, format string, data []byte) (string, error) {
+	s.outputData = append([]byte(nil), data...)
+	s.outputFormat = format
 	return "output.png", nil
 }
 func (*studioServiceStorageStub) ReadJSON(context.Context, string, any) error { return nil }

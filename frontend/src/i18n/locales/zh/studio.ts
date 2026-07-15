@@ -8,7 +8,7 @@ export default {
     chatMode: '会话',
     imageMode: '生图',
     endpoint: 'API 端点',
-    defaultEndpoint: '默认端点',
+    defaultEndpoint: 'Default',
     apiKeyQuota: 'API Key / 额度',
     noApiKey: '暂无可用密钥',
     unlimited: '不限额',
@@ -29,6 +29,8 @@ export default {
     count: '张数',
     reference: '参考图',
     upload: '上传',
+    referenceCount: '{count}/{max} 张',
+    referenceLimit: '最多只能上传 {max} 张参考图。',
     removeReference: '移除参考图',
     chatEmptyTitle: '开始一段新会话',
     chatEmptyHint: '选择端点、API Key 和模型，然后直接输入内容。',
@@ -56,7 +58,7 @@ export default {
     requestError: '错误',
     imageParameters: '图片参数',
     keysFailed: 'API Key 加载失败。',
-    invalidImage: '请选择有效的图片文件。',
+    invalidImage: '参考图仅支持 JPEG、PNG 或 WebP 格式。',
     imageTooLarge: '参考图不能超过 20MB。'
   }
 }

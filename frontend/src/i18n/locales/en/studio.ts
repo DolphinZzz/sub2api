@@ -8,7 +8,7 @@ export default {
     chatMode: 'Chat',
     imageMode: 'Image',
     endpoint: 'API endpoint',
-    defaultEndpoint: 'Default endpoint',
+    defaultEndpoint: 'Default',
     apiKeyQuota: 'API Key / quota',
     noApiKey: 'No available key',
     unlimited: 'Unlimited',
@@ -29,6 +29,8 @@ export default {
     count: 'Count',
     reference: 'Reference',
     upload: 'Upload',
+    referenceCount: '{count}/{max} images',
+    referenceLimit: 'You can upload up to {max} reference images.',
     removeReference: 'Remove reference image',
     chatEmptyTitle: 'Start a new conversation',
     chatEmptyHint: 'Choose an endpoint, API key, and model, then enter your message.',
@@ -56,7 +58,7 @@ export default {
     requestError: 'Error',
     imageParameters: 'Image parameters',
     keysFailed: 'Failed to load API keys.',
-    invalidImage: 'Choose a valid image file.',
+    invalidImage: 'Reference images must be JPEG, PNG, or WebP files.',
     imageTooLarge: 'The reference image must be 20MB or smaller.'
   }
 }

@@ -103,6 +103,22 @@ describe('studio API helpers', () => {
     expect(payload.tools[0]).not.toHaveProperty('aspect_ratio')
   })
 
+  it('limits a Responses image request to five reference images', () => {
+    const references = Array.from({ length: 6 }, (_, index) => `data:image/png;base64,ref-${index}`)
+    const payload = buildImagePayload('gpt-5.5', 'combine these references', {
+      action: 'edit',
+      size: '1024x1024',
+      aspectRatio: '1:1',
+      quality: 'medium',
+      background: 'auto',
+      outputFormat: 'png',
+      referenceImages: references,
+    })
+
+    expect(payload.input[0].content.filter((part) => part.type === 'input_image')).toHaveLength(5)
+    expect(JSON.stringify(payload)).not.toContain('ref-5')
+  })
+
   it('restores message asset and request references from session detail', () => {
     const session = normalizeStudioSession({
       id: 'session-1',

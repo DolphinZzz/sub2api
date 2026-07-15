@@ -415,6 +415,12 @@ func (s *StudioService) PersistOutputImage(ctx context.Context, rc *StudioReques
 		return nil, errors.New("generated image is empty")
 	}
 	format = normalizeStudioImageFormat(format)
+	if len(data) > studioLowQualityMaxBytes && studioImageRequestQuality(rc.Request.Payload) == "low" {
+		data, err = compressStudioImageToLimit(data, format, studioLowQualityMaxBytes)
+		if err != nil {
+			return nil, fmt.Errorf("compress low-quality generated image: %w", err)
+		}
+	}
 	mimeType := mime.TypeByExtension("." + format)
 	if mimeType == "" {
 		mimeType = "image/" + format
