@@ -104,12 +104,32 @@ func TestMigrationChecksumCompatibilityRules_CoverEditedUpgradeCompatibilityMigr
 		"118_wechat_dual_mode_and_auth_source_defaults.sql",
 		"120_enforce_payment_orders_out_trade_no_unique_notx.sql",
 		"123_fix_legacy_auth_source_grant_on_signup_defaults.sql",
+		"177_studio_persistence.sql",
 	} {
 		rule, ok := migrationChecksumCompatibilityRules[name]
 		require.Truef(t, ok, "missing compatibility rule for %s", name)
 		require.NotEmpty(t, rule.fileChecksum)
 		require.NotEmpty(t, rule.acceptedDBChecksum)
 	}
+}
+
+func TestMigrationChecksumCompatibilityRules_CoverStudioPersistenceDevelopmentChecksums(t *testing.T) {
+	const name = "177_studio_persistence.sql"
+
+	rule, ok := migrationChecksumCompatibilityRules[name]
+	require.True(t, ok)
+
+	require.True(t, isMigrationChecksumCompatible(
+		name,
+		"18e0f32da304b4309c86f606e8b2b641efa2a03896efd85283c67e7777c75341",
+		rule.fileChecksum,
+	))
+	require.True(t, isMigrationChecksumCompatible(
+		name,
+		"18e0f32da304b4309c86f606e8b2b641efa2a03896efd85283c67e7777c75341",
+		"e2d0c3122bb418ec48f14fa9ab41a9e9d8677144d0ccc4b570e2d312a37a1f67",
+	))
+	require.False(t, isMigrationChecksumCompatible(name, "not-known", rule.fileChecksum))
 }
 
 func TestEnsureAtlasBaselineAligned(t *testing.T) {

@@ -65,6 +65,17 @@ func RegisterUserRoutes(
 			keys.DELETE("/:id", h.APIKey.Delete)
 		}
 
+		studio := authenticated.Group("/studio")
+		{
+			studio.GET("/sessions", h.Studio.ListSessions)
+			studio.POST("/sessions", h.Studio.CreateSession)
+			studio.GET("/sessions/:id", h.Studio.GetSession)
+			studio.DELETE("/sessions/:id", h.Studio.DeleteSession)
+			studio.POST("/sessions/:id/responses", h.Studio.Responses)
+			studio.GET("/requests/:id", h.Studio.GetRequest)
+			studio.GET("/assets/:id/content", h.Studio.AssetContent)
+		}
+
 		// 用户可用分组（非管理员接口）
 		groups := authenticated.Group("/groups")
 		{

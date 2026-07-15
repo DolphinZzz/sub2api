@@ -94,6 +94,7 @@ type Config struct {
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
+	Studio                  StudioConfig                  `mapstructure:"studio"`
 }
 
 type LogConfig struct {
@@ -224,6 +225,13 @@ type BatchImageConfig struct {
 	VertexOutputRetentionHours   int    `mapstructure:"vertex_output_retention_hours"`
 	VertexBatchPredictionBaseURL string `mapstructure:"vertex_batch_prediction_base_url"`
 	VertexGCSBaseURL             string `mapstructure:"vertex_gcs_base_url"`
+}
+
+type StudioConfig struct {
+	StorageRoot            string `mapstructure:"storage_root"`
+	RetentionDays          int    `mapstructure:"retention_days"`
+	CleanupIntervalMinutes int    `mapstructure:"cleanup_interval_minutes"`
+	CleanupBatchSize       int    `mapstructure:"cleanup_batch_size"`
 }
 
 type LinuxDoConnectConfig struct {
@@ -1843,6 +1851,12 @@ func setDefaults() {
 	viper.SetDefault("batch_image.vertex_batch_prediction_base_url", "")
 	viper.SetDefault("batch_image.vertex_gcs_base_url", "")
 
+	// Studio server-side history and generated asset storage.
+	viper.SetDefault("studio.storage_root", "./data/studio")
+	viper.SetDefault("studio.retention_days", 30)
+	viper.SetDefault("studio.cleanup_interval_minutes", 30)
+	viper.SetDefault("studio.cleanup_batch_size", 100)
+
 	// Ops (vNext)
 	viper.SetDefault("ops.enabled", true)
 	viper.SetDefault("ops.use_preaggregated_tables", true)
@@ -2501,6 +2515,18 @@ func (c *Config) Validate() error {
 		if c.BatchImage.VertexOutputRetentionHours <= 0 {
 			return fmt.Errorf("batch_image.vertex_output_retention_hours must be positive")
 		}
+	}
+	if strings.TrimSpace(c.Studio.StorageRoot) == "" {
+		return fmt.Errorf("studio.storage_root must not be empty")
+	}
+	if c.Studio.RetentionDays <= 0 {
+		return fmt.Errorf("studio.retention_days must be positive")
+	}
+	if c.Studio.CleanupIntervalMinutes <= 0 {
+		return fmt.Errorf("studio.cleanup_interval_minutes must be positive")
+	}
+	if c.Studio.CleanupBatchSize <= 0 {
+		return fmt.Errorf("studio.cleanup_batch_size must be positive")
 	}
 	if c.Dashboard.Enabled {
 		if c.Dashboard.StatsFreshTTLSeconds <= 0 {

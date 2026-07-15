@@ -150,6 +150,7 @@ export default {
     dashboard: 'Dashboard',
     announcements: 'Announcements',
     apiKeys: 'API Keys',
+    studio: 'Studio',
     batchImage: 'Batch Images',
     usage: 'Usage',
     redeem: 'Redeem',

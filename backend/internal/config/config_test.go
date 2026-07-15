@@ -34,6 +34,35 @@ func TestLoadServerTimingConfig(t *testing.T) {
 	})
 }
 
+func TestLoadStudioConfig(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.Equal(t, "./data/studio", cfg.Studio.StorageRoot)
+		require.Equal(t, 30, cfg.Studio.RetentionDays)
+		require.Equal(t, 30, cfg.Studio.CleanupIntervalMinutes)
+		require.Equal(t, 100, cfg.Studio.CleanupBatchSize)
+	})
+
+	t.Run("environment overrides", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		t.Setenv("STUDIO_STORAGE_ROOT", "/srv/studio")
+		t.Setenv("STUDIO_RETENTION_DAYS", "14")
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.Equal(t, "/srv/studio", cfg.Studio.StorageRoot)
+		require.Equal(t, 14, cfg.Studio.RetentionDays)
+	})
+
+	t.Run("rejects invalid cleanup settings", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		t.Setenv("STUDIO_CLEANUP_BATCH_SIZE", "0")
+		_, err := Load()
+		require.ErrorContains(t, err, "studio.cleanup_batch_size must be positive")
+	})
+}
+
 func TestLoadForBootstrapAllowsMissingJWTSecret(t *testing.T) {
 	viper.Reset()
 	t.Setenv("JWT_SECRET", "")

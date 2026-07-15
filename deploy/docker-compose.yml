@@ -49,6 +49,7 @@ services:
       - SERVER_MODE=${SERVER_MODE:-release}
       - ENABLE_SERVER_TIMING=${ENABLE_SERVER_TIMING:-false}
       - RUN_MODE=${RUN_MODE:-standard}
+      - STUDIO_STORAGE_ROOT=/app/data/studio
 
       # =======================================================================
       # Database Configuration (PostgreSQL)

@@ -206,6 +206,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/studio',
+    name: 'Studio',
+    component: () => import('@/views/user/StudioView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Studio',
+      titleKey: 'studio.title',
+      descriptionKey: 'studio.subtitle'
+    }
+  },
+  {
     path: '/batch-image',
     name: 'BatchImageGuide',
     alias: '/docs/batch-image',

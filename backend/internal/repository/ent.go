@@ -5,7 +5,9 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/ent"
@@ -48,19 +50,9 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 
 	// 使用 Ent 的 SQL 驱动打开 PostgreSQL 连接。
 	// dialect.Postgres 指定使用 PostgreSQL 方言进行 SQL 生成。
-	var drv *entsql.Driver
-	if cfg.Server.EnableServerTiming {
-		connector, err := pq.NewConnector(dsn)
-		if err != nil {
-			return nil, nil, err
-		}
-		drv = entsql.OpenDB(dialect.Postgres, sql.OpenDB(newServerTimingConnector(connector)))
-	} else {
-		var err error
-		drv, err = entsql.Open(dialect.Postgres, dsn)
-		if err != nil {
-			return nil, nil, err
-		}
+	drv, err := openPostgresEntDriver(cfg, dsn)
+	if err != nil {
+		return nil, nil, err
 	}
 	applyDBPoolSettings(drv.DB(), cfg)
 
@@ -70,10 +62,25 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	migrationCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	if err := applyMigrationsFS(migrationCtx, drv.DB(), migrations.FS); err != nil {
+		if isPostgresDatabaseMissing(err) {
+			_ = drv.Close()
+			if ensureErr := ensurePostgresDatabase(migrationCtx, cfg.Database, cfg.Timezone); ensureErr != nil {
+				return nil, nil, fmt.Errorf("ensure database %q exists: %w", cfg.Database.DBName, ensureErr)
+			}
+			drv, err = openPostgresEntDriver(cfg, dsn)
+			if err != nil {
+				return nil, nil, err
+			}
+			applyDBPoolSettings(drv.DB(), cfg)
+			if err = applyMigrationsFS(migrationCtx, drv.DB(), migrations.FS); err == nil {
+				goto migrationsApplied
+			}
+		}
 		_ = drv.Close() // 迁移失败时关闭驱动，避免资源泄露
 		return nil, nil, err
 	}
 
+migrationsApplied:
 	// 创建 Ent 客户端，绑定到已配置的数据库驱动。
 	client := ent.NewClient(ent.Driver(drv))
 
@@ -106,4 +113,56 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	}
 
 	return client, drv.DB(), nil
+}
+
+func openPostgresEntDriver(cfg *config.Config, dsn string) (*entsql.Driver, error) {
+	if cfg.Server.EnableServerTiming {
+		connector, err := pq.NewConnector(dsn)
+		if err != nil {
+			return nil, err
+		}
+		return entsql.OpenDB(dialect.Postgres, sql.OpenDB(newServerTimingConnector(connector))), nil
+	}
+	return entsql.Open(dialect.Postgres, dsn)
+}
+
+func isPostgresDatabaseMissing(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr != nil && string(pqErr.Code) == "3D000"
+}
+
+var postgresDatabaseNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,62}$`)
+
+func ensurePostgresDatabase(ctx context.Context, dbCfg config.DatabaseConfig, timezoneName string) error {
+	if !postgresDatabaseNamePattern.MatchString(dbCfg.DBName) {
+		return fmt.Errorf("invalid database name %q", dbCfg.DBName)
+	}
+	bootstrapCfg := dbCfg
+	bootstrapCfg.DBName = "postgres"
+	bootstrapDB, err := sql.Open("postgres", bootstrapCfg.DSNWithTimezone(timezoneName))
+	if err != nil {
+		return fmt.Errorf("open bootstrap database: %w", err)
+	}
+	defer bootstrapDB.Close()
+	if err := bootstrapDB.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping bootstrap database: %w", err)
+	}
+	return ensurePostgresDatabaseExists(ctx, bootstrapDB, dbCfg.DBName)
+}
+
+func ensurePostgresDatabaseExists(ctx context.Context, bootstrapDB *sql.DB, dbName string) error {
+	if !postgresDatabaseNamePattern.MatchString(dbName) {
+		return fmt.Errorf("invalid database name %q", dbName)
+	}
+	var exists bool
+	if err := bootstrapDB.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", dbName).Scan(&exists); err != nil {
+		return fmt.Errorf("check database existence: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	if _, err := bootstrapDB.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbName)); err != nil {
+		return fmt.Errorf("create database %q: %w", dbName, err)
+	}
+	return nil
 }

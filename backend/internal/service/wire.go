@@ -661,7 +661,15 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorRunner,
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
+	ProvideStudioFileStorage,
+	ProvideStudioService,
 )
+
+func ProvideStudioService(repo StudioRepository, storage StudioFileStorage, apiKeys *APIKeyService, cfg *config.Config) *StudioService {
+	svc := NewStudioService(repo, storage, apiKeys, cfg)
+	svc.Start()
+	return svc
+}
 
 // ProvideUserPlatformQuotaUsageFlusher 创建并启动 UserPlatformQuotaUsageFlusher。
 func ProvideUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache, quotaRepo UserPlatformQuotaRepository, tw *TimingWheelService) *UserPlatformQuotaUsageFlusher {

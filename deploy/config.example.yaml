@@ -1053,6 +1053,20 @@ billing:
   user_platform_quota_cache_ttl_seconds: 86400
 
 # =============================================================================
+# Studio Server-Side Persistence
+# 创作台服务端持久化
+# =============================================================================
+studio:
+  # All instances must mount the same persistent volume at this path.
+  # 多实例部署必须在此路径挂载同一共享持久卷。
+  storage_root: "./data/studio"
+  # Delete sessions after this many days without request activity.
+  # 会话最后请求活动超过此天数后自动删除。
+  retention_days: 30
+  cleanup_interval_minutes: 30
+  cleanup_batch_size: 100
+
+# =============================================================================
 # Turnstile Configuration
 # Turnstile 人机验证配置
 # =============================================================================
