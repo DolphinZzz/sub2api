@@ -28,6 +28,8 @@ type StudioHandler struct {
 	maxBodySize   int64
 }
 
+const studioImageGenerationInstructions = "You are in image generation mode. You must call the attached image_generation tool for this request. Do not return image prompts, instructions, or any text-only substitute."
+
 func NewStudioHandler(studio *service.StudioService, settings *service.SettingService, gateway *GatewayHandler, openAIGateway *OpenAIGatewayHandler, apiKeyAuth middleware2.APIKeyAuthMiddleware, cfg *config.Config) *StudioHandler {
 	maxBodySize := int64(100 << 20)
 	if cfg != nil && cfg.Gateway.MaxBodySize > 0 {
@@ -180,13 +182,21 @@ func (h *StudioHandler) Responses(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	forwardPayload := req.Payload
+	if rc.Mode == "image" {
+		forwardPayload, err = forceStudioImageGenerationToolChoice(forwardPayload)
+		if err != nil {
+			response.BadRequest(c, "Invalid image generation payload")
+			return
+		}
+	}
 
 	// Invoke the existing gateway with the selected, owned API key so billing,
 	// quota checks, account routing, usage_logs and failover stay on one path.
 	c.Set(string(middleware2.ContextKeyAPIKey), rc.APIKey)
 	c.Request.Body = http.NoBody
-	c.Request.Body = ioNopCloser{Reader: bytes.NewReader(req.Payload)}
-	c.Request.ContentLength = int64(len(req.Payload))
+	c.Request.Body = ioNopCloser{Reader: bytes.NewReader(forwardPayload)}
+	c.Request.ContentLength = int64(len(forwardPayload))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Request.Header.Set("Accept", "text/event-stream")
 	c.Request.Header.Set("OpenAI-Beta", "responses=experimental")
@@ -196,13 +206,49 @@ func (h *StudioHandler) Responses(c *gin.Context) {
 	original := c.Writer
 	w := newStudioCaptureWriter(original, h.studio, rc)
 	c.Writer = w
-	if rc.APIKey.Group != nil && (rc.APIKey.Group.Platform == service.PlatformOpenAI || rc.APIKey.Group.Platform == service.PlatformGrok) {
+	if studioUsesOpenAIGateway(rc.Mode, rc.APIKey) {
 		h.openAIGateway.Responses(c)
 	} else {
 		h.gateway.Responses(c)
 	}
 	c.Writer = original
 	w.Finish(c.Request.Context())
+}
+
+func studioUsesOpenAIGateway(mode string, apiKey *service.APIKey) bool {
+	if mode == "image" {
+		return true
+	}
+	return apiKey != nil && apiKey.Group != nil &&
+		(apiKey.Group.Platform == service.PlatformOpenAI || apiKey.Group.Platform == service.PlatformGrok)
+}
+
+func forceStudioImageGenerationToolChoice(payload json.RawMessage) (json.RawMessage, error) {
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil, err
+	}
+	if tools, ok := body["tools"].([]any); ok {
+		for _, value := range tools {
+			tool, ok := value.(map[string]any)
+			if !ok || tool["type"] != "image_generation" {
+				continue
+			}
+			delete(tool, "n")
+			delete(tool, "aspect_ratio")
+		}
+	}
+	body["tool_choice"] = map[string]any{"type": "image_generation"}
+	existing, _ := body["instructions"].(string)
+	if !strings.Contains(existing, studioImageGenerationInstructions) {
+		existing = strings.TrimSpace(existing)
+		if existing == "" {
+			body["instructions"] = studioImageGenerationInstructions
+		} else {
+			body["instructions"] = existing + "\n\n" + studioImageGenerationInstructions
+		}
+	}
+	return json.Marshal(body)
 }
 
 func (h *StudioHandler) endpointAllowed(c *gin.Context, endpoint string) bool {

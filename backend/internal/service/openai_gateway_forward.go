@@ -67,6 +67,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+		if IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body) {
+			return nil, &UpstreamFailoverError{
+				StatusCode:   http.StatusBadGateway,
+				ResponseBody: []byte(`{"error":{"type":"upstream_capability_error","message":"Selected account does not support the Responses API required by image_generation"}}`),
+			}
+		}
 		return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
 	}
 

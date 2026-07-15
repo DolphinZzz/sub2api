@@ -121,6 +121,7 @@ function imageOptionsFromPayload(value: unknown): StudioRequestSummary['image'] 
     quality: stringValue(tool.quality) || undefined,
     background: stringValue(tool.background) || undefined,
     outputFormat: stringValue(tool.output_format) || undefined,
+    count: numberValue(tool.n) ?? undefined,
   }
 }
 
@@ -266,18 +267,45 @@ export function buildChatPayload(model: string, messages: StudioInputMessage[]) 
   }
 }
 
+function imageSizeForAspectRatio(size: string, aspectRatio: string): string {
+  const sizeMatch = /^(\d+)x(\d+)$/.exec(size)
+  const ratioMatch = /^(\d+):(\d+)$/.exec(aspectRatio)
+  if (!sizeMatch || !ratioMatch) return size
+
+  const width = Number(sizeMatch[1])
+  const height = Number(sizeMatch[2])
+  let ratioWidth = Number(ratioMatch[1])
+  let ratioHeight = Number(ratioMatch[2])
+  if (!width || !height || !ratioWidth || !ratioHeight) return size
+
+  const gcd = (left: number, right: number): number => right ? gcd(right, left % right) : left
+  const divisor = gcd(ratioWidth, ratioHeight)
+  ratioWidth /= divisor
+  ratioHeight /= divisor
+
+  const pixelsPerStep = ratioWidth * ratioHeight * 16 * 16
+  const idealStep = Math.round(Math.sqrt((width * height) / pixelsPerStep))
+  const minStep = Math.ceil(Math.sqrt(655_360 / pixelsPerStep))
+  const maxStep = Math.min(
+    Math.floor(3840 / (Math.max(ratioWidth, ratioHeight) * 16)),
+    Math.floor(Math.sqrt(8_294_400 / pixelsPerStep)),
+  )
+  if (minStep > maxStep) return size
+  const step = Math.max(minStep, Math.min(maxStep, idealStep))
+  return `${ratioWidth * step * 16}x${ratioHeight * step * 16}`
+}
+
 export function buildImagePayload(model: string, prompt: string, options: StudioImageOptions) {
   const content: Array<Record<string, string>> = [{ type: 'input_text', text: prompt }]
   for (const imageUrl of options.referenceImages) content.push({ type: 'input_image', image_url: imageUrl })
-  const tool: Record<string, string> = {
+  const tool = {
     type: 'image_generation',
-    model: 'gpt-image-2',
-    size: options.size,
+    action: options.action,
+    size: imageSizeForAspectRatio(options.size, options.aspectRatio),
     quality: options.quality,
+    background: options.background,
     output_format: options.outputFormat,
   }
-  if (options.background === 'transparent') tool.background = 'transparent'
-
   return {
     model,
     input: [{ type: 'message', role: 'user', content }],

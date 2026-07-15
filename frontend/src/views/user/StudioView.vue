@@ -692,7 +692,7 @@ function formatDuration(value: number | null) {
 
 function formatImageParameters(image: StudioRequestSummary['image']) {
   if (!image) return '-'
-  return [image.action, image.size, image.aspectRatio, image.quality, image.background, image.outputFormat]
+  return [image.action, image.size, image.aspectRatio, image.quality, image.background, image.outputFormat, image.count ? `× ${image.count}` : '']
     .filter(Boolean)
     .join(' · ')
 }

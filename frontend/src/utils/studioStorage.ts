@@ -27,6 +27,7 @@ export interface StudioRequestSummary {
     quality?: string
     background?: string
     outputFormat?: string
+    count?: number
   }
   createdAt: number
 }

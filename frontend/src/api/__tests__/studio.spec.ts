@@ -30,7 +30,7 @@ describe('studio API helpers', () => {
     })
   })
 
-  it('uses supported image_generation tool controls and input images for editing', () => {
+  it('builds a Responses image edit payload with only supported tool controls', () => {
     const payload = buildImagePayload('gpt-5.5', 'redesign it', {
       action: 'edit',
       size: '2048x1152',
@@ -41,24 +41,29 @@ describe('studio API helpers', () => {
       referenceImages: ['data:image/png;base64,abc'],
     })
     expect(payload).toMatchObject({
+      model: 'gpt-5.5',
       input: [{ content: [
         { type: 'input_text', text: 'redesign it' },
         { type: 'input_image', image_url: 'data:image/png;base64,abc' },
       ] }],
       tools: [{
         type: 'image_generation',
-        model: 'gpt-image-2',
+        action: 'edit',
         size: '2048x1152',
         quality: 'high',
         background: 'transparent',
         output_format: 'webp',
       }],
+      stream: true,
+      store: false,
     })
-    expect(payload.tools[0]).not.toHaveProperty('action')
+    expect(payload.tools[0]).not.toHaveProperty('model')
+    expect(payload.tools[0]).not.toHaveProperty('n')
     expect(payload.tools[0]).not.toHaveProperty('aspect_ratio')
+    expect(payload.tool_choice).toEqual({ type: 'image_generation' })
   })
 
-  it('keeps default image generation aligned with the Responses tool contract', () => {
+  it('builds one Responses image generation payload per requested image', () => {
     const payload = buildImagePayload('gpt-5.5', 'draw a cat', {
       action: 'generate',
       size: '1024x1024',
@@ -71,11 +76,31 @@ describe('studio API helpers', () => {
 
     expect(payload.tools[0]).toEqual({
       type: 'image_generation',
-      model: 'gpt-image-2',
+      action: 'generate',
       size: '1024x1024',
       quality: 'low',
+      background: 'auto',
       output_format: 'png',
     })
+    expect(payload.tools[0]).not.toHaveProperty('n')
+    expect(payload.tools[0]).not.toHaveProperty('aspect_ratio')
+    expect(payload.model).toBe('gpt-5.5')
+    expect(payload.tool_choice).toEqual({ type: 'image_generation' })
+  })
+
+  it('encodes the selected aspect ratio in the supported size field', () => {
+    const payload = buildImagePayload('gpt-5.5', 'draw a landscape', {
+      action: 'generate',
+      size: '1024x1024',
+      aspectRatio: '16:9',
+      quality: 'medium',
+      background: 'auto',
+      outputFormat: 'png',
+      referenceImages: [],
+    })
+
+    expect(payload.tools[0].size).toBe('1280x720')
+    expect(payload.tools[0]).not.toHaveProperty('aspect_ratio')
   })
 
   it('restores message asset and request references from session detail', () => {
@@ -116,11 +141,11 @@ describe('studio API helpers', () => {
       model: 'gpt-5.5',
       status: 'completed',
       duration_ms: 1200,
-      payload: { tools: [{ type: 'image_generation', size: '1024x1024', quality: 'low' }] },
+      payload: { tools: [{ type: 'image_generation', action: 'generate', size: '1024x1024', aspect_ratio: '1:1', quality: 'low', n: 2 }] },
     })).toMatchObject({
       apiKeyId: 42,
       apiKeyName: 'Studio key',
-      image: { size: '1024x1024', quality: 'low' },
+      image: { action: 'generate', size: '1024x1024', aspectRatio: '1:1', quality: 'low', count: 2 },
     })
   })
 

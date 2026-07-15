@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestStudioCaptureWriter_PersistsAndDeduplicatesImage(t *testing.T) {
@@ -64,6 +66,37 @@ func TestStudioEndpointNormalizationIsExact(t *testing.T) {
 	require.True(t, studioEndpointMatchesRequestOrigin(ctx, "https://api.example.com"))
 	require.False(t, studioEndpointMatchesRequestOrigin(ctx, "https://api.example.com.evil.test"))
 	require.False(t, studioEndpointMatchesRequestOrigin(ctx, "https://api.example.com/proxy"))
+}
+
+func TestForceStudioImageGenerationToolChoice(t *testing.T) {
+	payload := json.RawMessage(`{"model":"gpt-5.5","tools":[{"type":"image_generation","size":"1024x1024","aspect_ratio":"1:1","n":2}],"tool_choice":"auto"}`)
+
+	forced, err := forceStudioImageGenerationToolChoice(payload)
+	require.NoError(t, err)
+	require.Equal(t, "image_generation", gjson.GetBytes(forced, "tool_choice.type").String())
+	require.Equal(t, studioImageGenerationInstructions, gjson.GetBytes(forced, "instructions").String())
+	require.Equal(t, "gpt-5.5", gjson.GetBytes(forced, "model").String())
+	require.Equal(t, "1024x1024", gjson.GetBytes(forced, "tools.0.size").String())
+	require.False(t, gjson.GetBytes(forced, "tools.0.aspect_ratio").Exists())
+	require.False(t, gjson.GetBytes(forced, "tools.0.n").Exists())
+	require.NotContains(t, string(forced), "gpt-image-2")
+}
+
+func TestForceStudioImageGenerationToolChoicePreservesExistingInstructions(t *testing.T) {
+	payload := json.RawMessage(`{"model":"gpt-5.5","instructions":"Keep the product label accurate.","tools":[{"type":"image_generation"}]}`)
+
+	forced, err := forceStudioImageGenerationToolChoice(payload)
+	require.NoError(t, err)
+	instructions := gjson.GetBytes(forced, "instructions").String()
+	require.Contains(t, instructions, "Keep the product label accurate.")
+	require.Contains(t, instructions, studioImageGenerationInstructions)
+}
+
+func TestStudioImageModeAlwaysUsesOpenAIResponsesGateway(t *testing.T) {
+	require.True(t, studioUsesOpenAIGateway("image", &service.APIKey{}))
+	require.True(t, studioUsesOpenAIGateway("image", &service.APIKey{Group: &service.Group{Platform: service.PlatformAnthropic}}))
+	require.True(t, studioUsesOpenAIGateway("chat", &service.APIKey{Group: &service.Group{Platform: service.PlatformOpenAI}}))
+	require.False(t, studioUsesOpenAIGateway("chat", &service.APIKey{Group: &service.Group{Platform: service.PlatformAnthropic}}))
 }
 
 func TestStudioEndpointAllowsCurrentOriginEvenWhenAPIBaseURLConfigured(t *testing.T) {
