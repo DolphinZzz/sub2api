@@ -3,9 +3,12 @@ import {
   buildChatPayload,
   buildImagePayload,
   consumeResponsesEvent,
+  imageAspectRatioForSize,
+  imageSizeForAspectRatio,
   normalizeStudioRequest,
   normalizeStudioSession,
   requestStudioResponse,
+  STUDIO_IMAGE_SIZES,
 } from '@/api/studio'
 
 beforeEach(() => localStorage.setItem('auth_token', 'jwt-test'))
@@ -88,7 +91,7 @@ describe('studio API helpers', () => {
     expect(payload.tool_choice).toEqual({ type: 'image_generation' })
   })
 
-  it('encodes the selected aspect ratio in the supported size field', () => {
+  it('encodes the selected aspect ratio using an allowed size', () => {
     const payload = buildImagePayload('gpt-5.5', 'draw a landscape', {
       action: 'generate',
       size: '1024x1024',
@@ -99,8 +102,37 @@ describe('studio API helpers', () => {
       referenceImages: [],
     })
 
-    expect(payload.tools[0].size).toBe('1280x720')
+    expect(payload.tools[0].size).toBe('2048x1152')
+    expect(STUDIO_IMAGE_SIZES).toContain(payload.tools[0].size)
     expect(payload.tools[0]).not.toHaveProperty('aspect_ratio')
+  })
+
+  it('keeps every image size inside the upstream allowlist', () => {
+    expect(imageSizeForAspectRatio('2048x2048', '1:1')).toBe('2048x2048')
+    expect(imageSizeForAspectRatio('3840x2160', '16:9')).toBe('3840x2160')
+    expect(imageSizeForAspectRatio('1024x1024', '2:3')).toBe('1024x1536')
+    expect(imageSizeForAspectRatio('1280x720', '16:9')).toBe('2048x1152')
+    expect(imageSizeForAspectRatio('1280x720', '4:3')).toBe('1024x1024')
+    expect(imageAspectRatioForSize('2160x3840')).toBe('9:16')
+  })
+
+  it('sends hard image controls even when the prompt contains conflicting values', () => {
+    const payload = buildImagePayload('gpt-5.5', '请生成 4:3、透明背景的低质量 JPEG', {
+      action: 'generate',
+      size: '3840x2160',
+      aspectRatio: '16:9',
+      quality: 'high',
+      background: 'auto',
+      outputFormat: 'webp',
+      referenceImages: [],
+    })
+
+    expect(payload.tools[0]).toMatchObject({
+      size: '3840x2160',
+      quality: 'high',
+      background: 'auto',
+      output_format: 'webp',
+    })
   })
 
   it('limits a Responses image request to five reference images', () => {

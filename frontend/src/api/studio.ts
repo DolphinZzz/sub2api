@@ -25,6 +25,29 @@ export interface StudioImageOptions {
   referenceImages: string[]
 }
 
+export const STUDIO_IMAGE_SIZES = [
+  '1024x1024',
+  '1536x1024',
+  '1024x1536',
+  '2048x2048',
+  '2048x1152',
+  '3840x2160',
+  '2160x3840',
+] as const
+
+const IMAGE_SIZES_BY_ASPECT_RATIO: Record<string, readonly string[]> = {
+  '1:1': ['1024x1024', '2048x2048'],
+  '2:3': ['1024x1536'],
+  '3:2': ['1536x1024'],
+  '9:16': ['2160x3840'],
+  '16:9': ['2048x1152', '3840x2160'],
+}
+
+export const STUDIO_IMAGE_ASPECT_RATIOS = Object.keys(IMAGE_SIZES_BY_ASPECT_RATIO)
+
+const DEFAULT_IMAGE_SIZE = STUDIO_IMAGE_SIZES[0]
+const STUDIO_IMAGE_SIZE_SET = new Set<string>(STUDIO_IMAGE_SIZES)
+
 export interface StudioResponseEnvelope {
   turn_id: string
   api_key_id: number
@@ -267,32 +290,30 @@ export function buildChatPayload(model: string, messages: StudioInputMessage[]) 
   }
 }
 
-function imageSizeForAspectRatio(size: string, aspectRatio: string): string {
-  const sizeMatch = /^(\d+)x(\d+)$/.exec(size)
-  const ratioMatch = /^(\d+):(\d+)$/.exec(aspectRatio)
-  if (!sizeMatch || !ratioMatch) return size
+function imagePixels(size: string): number {
+  const [width, height] = size.split('x').map(Number)
+  return width * height
+}
 
-  const width = Number(sizeMatch[1])
-  const height = Number(sizeMatch[2])
-  let ratioWidth = Number(ratioMatch[1])
-  let ratioHeight = Number(ratioMatch[2])
-  if (!width || !height || !ratioWidth || !ratioHeight) return size
+export function imageAspectRatioForSize(size: string): string {
+  for (const [aspectRatio, sizes] of Object.entries(IMAGE_SIZES_BY_ASPECT_RATIO)) {
+    if (sizes.includes(size)) return aspectRatio
+  }
+  return '1:1'
+}
 
-  const gcd = (left: number, right: number): number => right ? gcd(right, left % right) : left
-  const divisor = gcd(ratioWidth, ratioHeight)
-  ratioWidth /= divisor
-  ratioHeight /= divisor
+export function imageSizeForAspectRatio(size: string, aspectRatio: string): string {
+  const normalizedSize = STUDIO_IMAGE_SIZE_SET.has(size) ? size : DEFAULT_IMAGE_SIZE
+  const candidates = IMAGE_SIZES_BY_ASPECT_RATIO[aspectRatio]
+  if (!candidates?.length) return normalizedSize
+  if (candidates.includes(normalizedSize)) return normalizedSize
 
-  const pixelsPerStep = ratioWidth * ratioHeight * 16 * 16
-  const idealStep = Math.round(Math.sqrt((width * height) / pixelsPerStep))
-  const minStep = Math.ceil(Math.sqrt(655_360 / pixelsPerStep))
-  const maxStep = Math.min(
-    Math.floor(3840 / (Math.max(ratioWidth, ratioHeight) * 16)),
-    Math.floor(Math.sqrt(8_294_400 / pixelsPerStep)),
-  )
-  if (minStep > maxStep) return size
-  const step = Math.max(minStep, Math.min(maxStep, idealStep))
-  return `${ratioWidth * step * 16}x${ratioHeight * step * 16}`
+  const targetPixels = imagePixels(normalizedSize)
+  return candidates.reduce((closest, candidate) => (
+    Math.abs(imagePixels(candidate) - targetPixels) < Math.abs(imagePixels(closest) - targetPixels)
+      ? candidate
+      : closest
+  ))
 }
 
 export function buildImagePayload(model: string, prompt: string, options: StudioImageOptions) {

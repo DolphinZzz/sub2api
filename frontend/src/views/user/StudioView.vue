@@ -297,8 +297,12 @@ import {
   fetchStudioAsset,
   getStudioRequest,
   getStudioSession,
+  imageAspectRatioForSize,
+  imageSizeForAspectRatio,
   listStudioSessions,
   requestStudioResponse,
+  STUDIO_IMAGE_ASPECT_RATIOS,
+  STUDIO_IMAGE_SIZES,
 } from '@/api/studio'
 import { useAppStore } from '@/stores/app'
 import type { ApiKey } from '@/types'
@@ -353,8 +357,9 @@ const modelOptions = [
   { value: 'gpt-5.6-terra', label: 'gpt-5.6 terra' },
   { value: 'gpt-5.6-luna', label: 'gpt-5.6 luna' },
 ]
-const sizeOptions = ['1024x1024', '1536x1024', '1024x1536', '2048x2048', '2048x1152', '3840x2160', '2160x3840'].map((value) => ({ value, label: value.replace('x', ' × ') }))
-const ratioOptions = ['1:1', '2:3', '3:2', '3:4', '4:3', '5:4', '4:5', '9:16', '16:9', '9:21', '21:9'].map((value) => ({ value, label: value }))
+const sizeOptions = STUDIO_IMAGE_SIZES.map((value) => ({ value, label: value.replace('x', ' × ') }))
+const ratioOptions = ['1:1', '2:3', '3:2', '3:4', '4:3', '5:4', '4:5', '9:16', '16:9', '9:21', '21:9']
+  .map((value) => ({ value, label: value, disabled: !STUDIO_IMAGE_ASPECT_RATIOS.includes(value) }))
 const actionOptions = computed(() => [
   { value: 'generate', label: t('studio.generateMode') },
   { value: 'edit', label: t('studio.editMode') },
@@ -776,6 +781,15 @@ watch(endpointOptions, (options) => {
     selectedEndpoint.value = options[0]?.value || window.location.origin
   }
 }, { immediate: true })
+
+watch(imageSize, (size) => {
+  const matchingRatio = imageAspectRatioForSize(size)
+  if (aspectRatio.value !== matchingRatio) aspectRatio.value = matchingRatio
+})
+watch(aspectRatio, (ratio) => {
+  const matchingSize = imageSizeForAspectRatio(imageSize.value, ratio)
+  if (imageSize.value !== matchingSize) imageSize.value = matchingSize
+})
 
 watch(outputFormat, (format) => {
   if (format === 'jpeg' && imageBackground.value === 'transparent') imageBackground.value = 'auto'
