@@ -19,7 +19,7 @@ func TestIsPostgresDatabaseMissing(t *testing.T) {
 func TestEnsurePostgresDatabaseExistsRejectsUnsafeName(t *testing.T) {
 	db, _, err := sqlmock.New()
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	defer func() { _ = db.Close() }()
 
 	err = ensurePostgresDatabaseExists(context.Background(), db, "sub2api;DROP")
 	require.Error(t, err)
@@ -29,7 +29,7 @@ func TestEnsurePostgresDatabaseExistsRejectsUnsafeName(t *testing.T) {
 func TestEnsurePostgresDatabaseExistsSkipsExistingDatabase(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	defer func() { _ = db.Close() }()
 
 	mock.ExpectQuery("SELECT EXISTS").
 		WithArgs("sub2api").
@@ -42,7 +42,7 @@ func TestEnsurePostgresDatabaseExistsSkipsExistingDatabase(t *testing.T) {
 func TestEnsurePostgresDatabaseExistsCreatesMissingDatabase(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	mock.ExpectQuery("SELECT EXISTS").
 		WithArgs("sub2api").
