@@ -354,14 +354,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var lastFailoverErr *service.UpstreamFailoverError
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 
-	// 生图意图的 /v1/responses 请求必须调度到确实支持 Responses API 的账号，否则
-	// 会在 forward 阶段被静默降级为无法生图的 Chat Completions 直转（#4417）。
-	// 仅对 OpenAI 平台生效：Grok 生图走独立的 forwardGrokResponses 路径，不应被过滤。
-	requiredCapability := service.OpenAIEndpointCapabilityChatCompletions
-	if imageIntent && requestPlatform == service.PlatformOpenAI {
-		requiredCapability = service.OpenAIEndpointCapabilityResponses
-	}
-
 	for {
 		// Streaming Forward intentionally detaches the upstream request so usage can
 		// be drained after a disconnect. Re-check the client context before every

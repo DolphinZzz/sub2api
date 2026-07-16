@@ -1089,9 +1089,33 @@ type GatewayOpenAIWSSchedulerScoreWeights struct {
 	Reset float64 `mapstructure:"reset"`
 	// QuotaHeadroom 倾向 7d 剩余额度更健康的账号；默认 0（关闭，不改变原有行为）。
 	QuotaHeadroom float64 `mapstructure:"quota_headroom"`
+	// UpstreamCost 倾向上游声明倍率更低的账号；默认 0（关闭，不改变原有行为）。
+	UpstreamCost float64 `mapstructure:"upstream_cost"`
 	// PreviousResponse/SessionSticky 仅在开启 OpenAI 高级调度的粘性加权时生效。
 	PreviousResponse float64 `mapstructure:"previous_response"`
 	SessionSticky    float64 `mapstructure:"session_sticky"`
+}
+
+func (w GatewayOpenAIWSSchedulerScoreWeights) BaseWeightSum() float64 {
+	return w.Priority + w.Load + w.Queue + w.ErrorRate + w.TTFT + w.Reset + w.QuotaHeadroom + w.UpstreamCost
+}
+
+func (w GatewayOpenAIWSSchedulerScoreWeights) TotalWeightSum() float64 {
+	return w.BaseWeightSum() + w.PreviousResponse + w.SessionSticky
+}
+
+func (w GatewayOpenAIWSSchedulerScoreWeights) IsValid() bool {
+	for _, weight := range []float64{
+		w.Priority, w.Load, w.Queue, w.ErrorRate, w.TTFT, w.Reset,
+		w.QuotaHeadroom, w.UpstreamCost, w.PreviousResponse, w.SessionSticky,
+	} {
+		if weight < 0 || math.IsNaN(weight) || math.IsInf(weight, 0) {
+			return false
+		}
+	}
+	baseSum := w.BaseWeightSum()
+	return baseSum > 0 && !math.IsNaN(baseSum) && !math.IsInf(baseSum, 0) &&
+		!math.IsNaN(w.TotalWeightSum()) && !math.IsInf(w.TotalWeightSum(), 0)
 }
 
 // GatewayOpenAISchedulerConfig OpenAI 高级调度器配置。
