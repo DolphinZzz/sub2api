@@ -79,6 +79,7 @@ type StudioRequest struct {
 	Endpoint     string          `json:"endpoint"`
 	Model        string          `json:"model"`
 	Status       string          `json:"status"`
+	AsyncTaskID  *string         `json:"async_task_id,omitempty"`
 	RequestPath  string          `json:"-"`
 	ResponsePath *string         `json:"-"`
 	DurationMS   *int64          `json:"duration_ms,omitempty"`
@@ -128,6 +129,7 @@ type StudioRepository interface {
 	UpsertMessage(context.Context, *StudioMessage) error
 	ListMessages(context.Context, int64, string) ([]StudioMessage, error)
 	CreateRequest(context.Context, *StudioRequest) error
+	SetRequestAsyncTask(context.Context, int64, string, string) error
 	CompleteRequest(context.Context, int64, *StudioRequest) error
 	GetRequest(context.Context, int64, string) (*StudioRequest, error)
 	CreateGeneration(context.Context, *StudioGenerationRecord) error
@@ -385,6 +387,71 @@ func (s *StudioService) StartRequest(ctx context.Context, in StudioStartRequest)
 	return &StudioRequestContext{Request: req, APIKey: key, UserMessage: userMessage, AssistantMessage: assistant, StartedAt: now, RequestContext: ctx, Mode: studioPayloadMode(payload), UpdateTitle: updateTitle}, nil
 }
 
+func (s *StudioService) SetRequestAsyncTask(ctx context.Context, rc *StudioRequestContext, taskID string) error {
+	taskID = strings.TrimSpace(taskID)
+	if rc == nil || rc.Request == nil || taskID == "" || len(taskID) > 128 {
+		return infraerrors.BadRequest("STUDIO_IMAGE_TASK_INVALID", "image task id is invalid")
+	}
+	if err := s.repo.SetRequestAsyncTask(ctx, rc.Request.UserID, rc.Request.ID, taskID); err != nil {
+		return fmt.Errorf("set studio image task: %w", err)
+	}
+	rc.Request.AsyncTaskID = &taskID
+	if _, err := s.storage.WriteRequest(ctx, rc.Request.UserID, rc.Request.SessionID, rc.Request.ID, rc.Request); err != nil {
+		return fmt.Errorf("refresh studio request task: %w", err)
+	}
+	return nil
+}
+
+func (s *StudioService) ResumeRequest(ctx context.Context, userID int64, requestID string) (*StudioRequestContext, error) {
+	req, err := s.GetRequest(ctx, userID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if req.Status != StudioRequestRunning {
+		return nil, infraerrors.Conflict("STUDIO_REQUEST_NOT_RUNNING", "Studio request is not running")
+	}
+	if req.APIKeyID == nil {
+		return nil, ErrStudioAPIKeyNotFound
+	}
+	key, err := s.GetOwnedAPIKey(ctx, userID, *req.APIKeyID)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := s.repo.ListMessages(ctx, userID, req.SessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list studio messages: %w", err)
+	}
+	var userMessage, assistantMessage *StudioMessage
+	for i := range messages {
+		message := &messages[i]
+		if message.TurnID == nil || *message.TurnID != req.TurnID {
+			continue
+		}
+		if message.MetadataPath != "" {
+			var doc StudioMessage
+			if s.storage.ReadJSON(ctx, message.MetadataPath, &doc) == nil {
+				message.Content, message.AssetIDs, message.RequestIDs = doc.Content, doc.AssetIDs, doc.RequestIDs
+			}
+		}
+		if message.Role == "user" {
+			userMessage = message
+		} else if message.Role == "assistant" {
+			assistantMessage = message
+		}
+	}
+	if userMessage == nil || assistantMessage == nil {
+		return nil, errors.New("studio request messages are missing")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		return nil, fmt.Errorf("decode studio request payload: %w", err)
+	}
+	return &StudioRequestContext{
+		Request: req, APIKey: key, UserMessage: userMessage, AssistantMessage: assistantMessage,
+		StartedAt: req.CreatedAt, RequestContext: ctx, Mode: studioPayloadMode(payload),
+	}, nil
+}
+
 func (s *StudioService) writeMessage(ctx context.Context, msg *StudioMessage, upsert bool) error {
 	path, err := s.storage.WriteMessage(ctx, msg.UserID, msg.SessionID, msg.ID, msg)
 	if err != nil {
@@ -411,10 +478,15 @@ func (s *StudioService) PersistOutputImage(ctx context.Context, rc *StudioReques
 	if err != nil {
 		return nil, fmt.Errorf("decode generated image: %w", err)
 	}
+	return s.PersistOutputImageBytes(ctx, rc, data, format, revisedPrompt)
+}
+
+func (s *StudioService) PersistOutputImageBytes(ctx context.Context, rc *StudioRequestContext, data []byte, format, revisedPrompt string) (*StudioAsset, error) {
 	if len(data) == 0 {
 		return nil, errors.New("generated image is empty")
 	}
 	format = normalizeStudioImageFormat(format)
+	var err error
 	if len(data) > studioLowQualityMaxBytes && studioImageRequestQuality(rc.Request.Payload) == "low" {
 		data, err = compressStudioImageToLimit(data, format, studioLowQualityMaxBytes)
 		if err != nil {
@@ -606,31 +678,43 @@ func (s *StudioService) Stop() {
 
 func (s *StudioService) persistInputAssets(ctx context.Context, req *StudioRequest, payload map[string]any) (json.RawMessage, []StudioAsset, error) {
 	var assets []StudioAsset
+	persist := func(part map[string]any, key string) error {
+		rawURL, _ := part[key].(string)
+		if !strings.HasPrefix(rawURL, "data:") {
+			return nil
+		}
+		mimeType, data, ext, err := decodeStudioDataURL(rawURL)
+		if err != nil {
+			return infraerrors.BadRequest("STUDIO_REFERENCE_INVALID", err.Error())
+		}
+		sum := sha256.Sum256(data)
+		digest := hex.EncodeToString(sum[:])
+		assetID := uuid.NewString()
+		path, err := s.storage.WriteInput(ctx, req.UserID, req.SessionID, digest, ext, data)
+		if err != nil {
+			return fmt.Errorf("write studio input: %w", err)
+		}
+		requestID := req.ID
+		assets = append(assets, StudioAsset{ID: assetID, SessionID: req.SessionID, UserID: req.UserID, RequestID: &requestID, Kind: "input", SHA256: digest, MIMEType: mimeType, ByteSize: int64(len(data)), RelativePath: path, CreatedAt: req.CreatedAt})
+		part[key] = map[string]any{"asset_id": assetID, "sha256": digest, "mime_type": mimeType, "byte_size": len(data)}
+		return nil
+	}
 	input, _ := payload["input"].([]any)
 	for _, item := range input {
 		msg, _ := item.(map[string]any)
 		content, _ := msg["content"].([]any)
 		for _, rawPart := range content {
 			part, _ := rawPart.(map[string]any)
-			rawURL, _ := part["image_url"].(string)
-			if !strings.HasPrefix(rawURL, "data:") {
-				continue
+			if err := persist(part, "image_url"); err != nil {
+				return nil, nil, err
 			}
-			mimeType, data, ext, err := decodeStudioDataURL(rawURL)
-			if err != nil {
-				return nil, nil, infraerrors.BadRequest("STUDIO_REFERENCE_INVALID", err.Error())
-			}
-			sum := sha256.Sum256(data)
-			digest := hex.EncodeToString(sum[:])
-			assetID := uuid.NewString()
-			path, err := s.storage.WriteInput(ctx, req.UserID, req.SessionID, digest, ext, data)
-			if err != nil {
-				return nil, nil, fmt.Errorf("write studio input: %w", err)
-			}
-			requestID := req.ID
-			asset := StudioAsset{ID: assetID, SessionID: req.SessionID, UserID: req.UserID, RequestID: &requestID, Kind: "input", SHA256: digest, MIMEType: mimeType, ByteSize: int64(len(data)), RelativePath: path, CreatedAt: req.CreatedAt}
-			assets = append(assets, asset)
-			part["image_url"] = map[string]any{"asset_id": asset.ID, "sha256": digest, "mime_type": mimeType, "byte_size": len(data)}
+		}
+	}
+	images, _ := payload["images"].([]any)
+	for _, rawImage := range images {
+		image, _ := rawImage.(map[string]any)
+		if err := persist(image, "image_url"); err != nil {
+			return nil, nil, err
 		}
 	}
 	encoded, err := json.Marshal(payload)
@@ -665,6 +749,9 @@ func normalizeStudioImageFormat(format string) string {
 	return format
 }
 func studioPrompt(payload map[string]any) string {
+	if prompt, _ := payload["prompt"].(string); strings.TrimSpace(prompt) != "" {
+		return prompt
+	}
 	input, _ := payload["input"].([]any)
 	for _, raw := range input {
 		msg, _ := raw.(map[string]any)
@@ -682,6 +769,9 @@ func studioPrompt(payload map[string]any) string {
 	return ""
 }
 func studioPayloadMode(payload map[string]any) string {
+	if _, ok := payload["prompt"].(string); ok {
+		return "image"
+	}
 	tools, _ := payload["tools"].([]any)
 	for _, raw := range tools {
 		if tool, ok := raw.(map[string]any); ok && tool["type"] == "image_generation" {

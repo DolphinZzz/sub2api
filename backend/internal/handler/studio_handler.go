@@ -3,13 +3,17 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -24,18 +28,27 @@ type StudioHandler struct {
 	settings      *service.SettingService
 	gateway       *GatewayHandler
 	openAIGateway *OpenAIGatewayHandler
+	asyncImage    *AsyncImageHandler
 	apiKeyAuth    middleware2.APIKeyAuthMiddleware
 	maxBodySize   int64
+	imageClient   *http.Client
+	finalizerMu   sync.Mutex
+	finalizers    map[string]*studioRequestFinalizer
+}
+
+type studioRequestFinalizer struct {
+	mu   sync.Mutex
+	refs int
 }
 
 const studioImageGenerationInstructions = "You are in image generation mode. You must call the attached image_generation tool for this request. Do not return image prompts, instructions, or any text-only substitute."
 
-func NewStudioHandler(studio *service.StudioService, settings *service.SettingService, gateway *GatewayHandler, openAIGateway *OpenAIGatewayHandler, apiKeyAuth middleware2.APIKeyAuthMiddleware, cfg *config.Config) *StudioHandler {
+func NewStudioHandler(studio *service.StudioService, settings *service.SettingService, gateway *GatewayHandler, openAIGateway *OpenAIGatewayHandler, asyncImage *AsyncImageHandler, apiKeyAuth middleware2.APIKeyAuthMiddleware, cfg *config.Config) *StudioHandler {
 	maxBodySize := int64(100 << 20)
 	if cfg != nil && cfg.Gateway.MaxBodySize > 0 {
 		maxBodySize = cfg.Gateway.MaxBodySize
 	}
-	return &StudioHandler{studio: studio, settings: settings, gateway: gateway, openAIGateway: openAIGateway, apiKeyAuth: apiKeyAuth, maxBodySize: maxBodySize}
+	return &StudioHandler{studio: studio, settings: settings, gateway: gateway, openAIGateway: openAIGateway, asyncImage: asyncImage, apiKeyAuth: apiKeyAuth, maxBodySize: maxBodySize, imageClient: &http.Client{Timeout: 60 * time.Second}, finalizers: make(map[string]*studioRequestFinalizer)}
 }
 
 type createStudioSessionRequest struct {
@@ -48,6 +61,12 @@ type studioResponseRequest struct {
 	APIKeyID int64           `json:"api_key_id" binding:"required"`
 	Endpoint string          `json:"endpoint" binding:"required"`
 	Payload  json.RawMessage `json:"payload" binding:"required"`
+}
+
+type studioImageTaskResponse struct {
+	*service.ImageTask
+	RequestID string `json:"request_id"`
+	Persisted bool   `json:"persisted"`
 }
 
 func (h *StudioHandler) ListSessions(c *gin.Context) {
@@ -213,6 +232,399 @@ func (h *StudioHandler) Responses(c *gin.Context) {
 	}
 	c.Writer = original
 	w.Finish(c.Request.Context())
+}
+
+func (h *StudioHandler) SubmitImage(c *gin.Context) {
+	userID, ok := studioUserID(c)
+	if !ok {
+		return
+	}
+	if h.asyncImage == nil || !h.asyncImage.enabled() {
+		response.Error(c, http.StatusServiceUnavailable, "Async image generation is not enabled")
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.maxBodySize)
+	var req studioResponseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request body")
+		return
+	}
+	if !h.endpointAllowed(c, req.Endpoint) {
+		response.BadRequest(c, "Endpoint is not configured")
+		return
+	}
+	key, ok := h.authenticateStudioAPIKey(c, userID, req.APIKeyID)
+	if !ok {
+		return
+	}
+	rc, err := h.studio.StartRequest(c.Request.Context(), service.StudioStartRequest{
+		UserID: userID, SessionID: c.Param("id"), TurnID: req.TurnID,
+		APIKeyID: req.APIKeyID, Endpoint: strings.TrimSpace(req.Endpoint), Payload: req.Payload,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	path := "/v1/images/generations/async"
+	var payload map[string]any
+	if json.Unmarshal(req.Payload, &payload) != nil {
+		h.finishAsyncImageFailure(rc, "invalid_request_error", "Invalid image generation payload", nil)
+		response.BadRequest(c, "Invalid image generation payload")
+		return
+	}
+	if images, _ := payload["images"].([]any); len(images) > 0 {
+		path = "/v1/images/edits/async"
+	}
+
+	internalRecorder := httptest.NewRecorder()
+	internalWriter, _ := gin.CreateTestContext(internalRecorder)
+	internal := c.Copy()
+	internal.Writer = internalWriter.Writer
+	internal.Request = c.Request.Clone(c.Request.Context())
+	internal.Request.Body = io.NopCloser(bytes.NewReader(req.Payload))
+	internal.Request.ContentLength = int64(len(req.Payload))
+	internal.Request.URL.Path = path
+	internal.Request.Header.Set("Content-Type", "application/json")
+	internal.Set(string(middleware2.ContextKeyAPIKey), key)
+	h.asyncImage.Submit(internal)
+
+	body := bytes.TrimSpace(internalRecorder.Body.Bytes())
+	if internalRecorder.Code != http.StatusAccepted {
+		message := studioAsyncErrorMessage(body, http.StatusText(internalRecorder.Code))
+		h.finishAsyncImageFailure(rc, strconv.Itoa(internalRecorder.Code), message, body)
+		c.Data(internalRecorder.Code, "application/json", body)
+		return
+	}
+	var task service.ImageTask
+	if err := json.Unmarshal(body, &task); err != nil || task.ID == "" {
+		h.finishAsyncImageFailure(rc, "invalid_task_response", "Async image service returned an invalid task", body)
+		response.Error(c, http.StatusBadGateway, "Async image service returned an invalid task")
+		return
+	}
+	if err := h.studio.SetRequestAsyncTask(c.Request.Context(), rc, task.ID); err != nil {
+		h.finishAsyncImageFailure(rc, "persistence_failed", err.Error(), body)
+		response.ErrorFrom(c, err)
+		return
+	}
+	go h.monitorStudioImageTask(userID, rc.Request.ID, key.ID, task.ID)
+	c.Header("Cache-Control", "no-store")
+	c.Header("Retry-After", "3")
+	c.Header("Location", "/api/v1/studio/requests/"+rc.Request.ID+"/image-task")
+	c.JSON(http.StatusAccepted, studioImageTaskResponse{ImageTask: &task, RequestID: rc.Request.ID})
+}
+
+func (h *StudioHandler) GetImageTask(c *gin.Context) {
+	userID, ok := studioUserID(c)
+	if !ok {
+		return
+	}
+	requestID := c.Param("id")
+	req, err := h.studio.GetRequest(c.Request.Context(), userID, requestID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if req.AsyncTaskID == nil || req.APIKeyID == nil {
+		response.BadRequest(c, "Studio request is not an asynchronous image task")
+		return
+	}
+	if req.Status != service.StudioRequestRunning {
+		task := &service.ImageTask{ID: *req.AsyncTaskID, TaskID: *req.AsyncTaskID, Object: "image.generation.task", Status: req.Status}
+		if req.ErrorMessage != nil {
+			task.Error, _ = json.Marshal(map[string]string{"type": "studio_error", "message": *req.ErrorMessage})
+		}
+		c.JSON(http.StatusOK, studioImageTaskResponse{ImageTask: task, RequestID: req.ID, Persisted: req.Status == service.StudioRequestCompleted})
+		return
+	}
+	if h.asyncImage == nil || h.asyncImage.tasks == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Async image task storage is unavailable")
+		return
+	}
+	task, err := h.asyncImage.tasks.Get(c.Request.Context(), service.ImageTaskOwner{UserID: userID, APIKeyID: *req.APIKeyID}, *req.AsyncTaskID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if task.Status == service.ImageTaskStatusProcessing {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Retry-After", "3")
+		c.JSON(http.StatusOK, studioImageTaskResponse{ImageTask: task, RequestID: req.ID})
+		return
+	}
+
+	persisted, err := h.finalizeStudioImageTask(c.Request.Context(), userID, requestID, task)
+	if err != nil {
+		response.Error(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, studioImageTaskResponse{ImageTask: task, RequestID: req.ID, Persisted: persisted})
+}
+
+func (h *StudioHandler) monitorStudioImageTask(userID int64, requestID string, apiKeyID int64, taskID string) {
+	if h.asyncImage == nil || h.asyncImage.tasks == nil {
+		return
+	}
+	timeout := h.asyncImage.tasks.ExecutionTimeout() + time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	owner := service.ImageTaskOwner{UserID: userID, APIKeyID: apiKeyID}
+	for {
+		task, err := h.asyncImage.tasks.Get(ctx, owner, taskID)
+		if err == nil && task.Status != service.ImageTaskStatusProcessing {
+			_, _ = h.finalizeStudioImageTask(ctx, userID, requestID, task)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			rc, resumeErr := h.studio.ResumeRequest(context.Background(), userID, requestID)
+			if resumeErr == nil {
+				h.finishAsyncImageFailure(rc, "task_timeout", "Image generation task timed out", nil)
+			}
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (h *StudioHandler) finalizeStudioImageTask(ctx context.Context, userID int64, requestID string, task *service.ImageTask) (bool, error) {
+	unlock := h.lockStudioFinalizer(requestID)
+	defer unlock()
+
+	req, err := h.studio.GetRequest(ctx, userID, requestID)
+	if err != nil {
+		return false, err
+	}
+	if req.Status != service.StudioRequestRunning {
+		return req.Status == service.StudioRequestCompleted, nil
+	}
+	rc, err := h.studio.ResumeRequest(ctx, userID, requestID)
+	if err != nil {
+		return false, err
+	}
+	if task == nil || task.Status == service.ImageTaskStatusFailed {
+		message := "Image generation failed"
+		var taskID string
+		var status int
+		var taskError json.RawMessage
+		if task != nil {
+			taskID, status, taskError = task.ID, task.HTTPStatus, task.Error
+			message = studioAsyncErrorMessage(task.Error, message)
+		}
+		event, _ := json.Marshal(map[string]any{"type": "studio.async_image.failed", "task_id": taskID, "http_status": status, "error": taskError})
+		persistCtx, cancel := studioPersistenceContext(ctx)
+		err = h.studio.FinishRequest(persistCtx, rc, service.StudioRequestFailed, "upstream_error", message, []json.RawMessage{event})
+		cancel()
+		return false, err
+	}
+	if task.Status != service.ImageTaskStatusCompleted {
+		return false, errors.New("image generation task is not complete")
+	}
+	assetIDs, err := h.persistAsyncTaskImages(ctx, rc, task)
+	if err != nil {
+		h.finishAsyncImageFailure(rc, "persistence_failed", err.Error(), nil)
+		return false, err
+	}
+	event, _ := json.Marshal(map[string]any{"type": "studio.async_image.completed", "task_id": task.ID, "asset_ids": assetIDs})
+	persistCtx, cancel := studioPersistenceContext(ctx)
+	err = h.studio.FinishRequest(persistCtx, rc, service.StudioRequestCompleted, "", "", []json.RawMessage{event})
+	cancel()
+	return err == nil, err
+}
+
+func (h *StudioHandler) lockStudioFinalizer(requestID string) func() {
+	h.finalizerMu.Lock()
+	if h.finalizers == nil {
+		h.finalizers = make(map[string]*studioRequestFinalizer)
+	}
+	entry := h.finalizers[requestID]
+	if entry == nil {
+		entry = &studioRequestFinalizer{}
+		h.finalizers[requestID] = entry
+	}
+	entry.refs++
+	h.finalizerMu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		h.finalizerMu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(h.finalizers, requestID)
+		}
+		h.finalizerMu.Unlock()
+	}
+}
+
+func (h *StudioHandler) authenticateStudioAPIKey(c *gin.Context, userID, apiKeyID int64) (*service.APIKey, bool) {
+	key, err := h.studio.GetOwnedAPIKey(c.Request.Context(), userID, apiKeyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return nil, false
+	}
+	previousAuthorization := c.GetHeader("Authorization")
+	c.Request.Header.Set("Authorization", "Bearer "+key.Key)
+	gin.HandlerFunc(h.apiKeyAuth)(c)
+	if previousAuthorization == "" {
+		c.Request.Header.Del("Authorization")
+	} else {
+		c.Request.Header.Set("Authorization", previousAuthorization)
+	}
+	if c.IsAborted() {
+		return nil, false
+	}
+	authenticatedKey, _ := middleware2.GetAPIKeyFromContext(c)
+	if authenticatedKey != nil && authenticatedKey.GroupID == nil && !h.settings.IsUngroupedKeySchedulingAllowed(c.Request.Context()) {
+		response.Forbidden(c, "API Key is not assigned to any group and cannot be used")
+		return nil, false
+	}
+	return authenticatedKey, authenticatedKey != nil
+}
+
+func (h *StudioHandler) finishAsyncImageFailure(rc *service.StudioRequestContext, code, message string, raw []byte) {
+	if rc == nil {
+		return
+	}
+	event := json.RawMessage(nil)
+	if json.Valid(raw) {
+		event = append(json.RawMessage(nil), raw...)
+	}
+	events := []json.RawMessage(nil)
+	if len(event) > 0 {
+		events = append(events, event)
+	}
+	ctx, cancel := studioPersistenceContext(rc.RequestContext)
+	defer cancel()
+	_ = h.studio.FinishRequest(ctx, rc, service.StudioRequestFailed, code, message, events)
+}
+
+type studioAsyncImageItem struct {
+	URL           string `json:"url"`
+	B64JSON       string `json:"b64_json"`
+	RevisedPrompt string `json:"revised_prompt"`
+}
+
+func (h *StudioHandler) persistAsyncTaskImages(ctx context.Context, rc *service.StudioRequestContext, task *service.ImageTask) ([]string, error) {
+	var direct struct {
+		Data   []studioAsyncImageItem `json:"data"`
+		Result struct {
+			Data []studioAsyncImageItem `json:"data"`
+		} `json:"result"`
+	}
+	if task == nil || len(task.Result) == 0 || json.Unmarshal(task.Result, &direct) != nil {
+		return nil, errors.New("async image task returned an invalid result")
+	}
+	items := direct.Data
+	if len(items) == 0 {
+		items = direct.Result.Data
+	}
+	if len(items) == 0 && task.ImageURL != "" {
+		items = []studioAsyncImageItem{{URL: task.ImageURL}}
+	}
+	if len(items) == 0 {
+		return nil, errors.New("async image task returned no images")
+	}
+	format := "png"
+	var payload map[string]any
+	if json.Unmarshal(rc.Request.Payload, &payload) == nil {
+		if value, _ := payload["output_format"].(string); value != "" {
+			format = value
+		}
+	}
+	assetIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		data, detectedFormat, err := h.readAsyncImage(ctx, item)
+		if err != nil {
+			return nil, err
+		}
+		if detectedFormat != "" {
+			format = detectedFormat
+		}
+		asset, err := h.studio.PersistOutputImageBytes(ctx, rc, data, format, item.RevisedPrompt)
+		if err != nil {
+			return nil, err
+		}
+		assetIDs = append(assetIDs, asset.ID)
+	}
+	return assetIDs, nil
+}
+
+func (h *StudioHandler) readAsyncImage(ctx context.Context, item studioAsyncImageItem) ([]byte, string, error) {
+	if encoded := strings.TrimSpace(item.B64JSON); encoded != "" {
+		data, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, "", fmt.Errorf("decode async image: %w", err)
+		}
+		return data, studioImageFormatFromBytes(data, ""), nil
+	}
+	rawURL := strings.TrimSpace(item.URL)
+	if rawURL == "" {
+		return nil, "", errors.New("async image result has no URL")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("build async image download: %w", err)
+	}
+	resp, err := h.imageClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("download async image: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, "", fmt.Errorf("download async image: unexpected status %d", resp.StatusCode)
+	}
+	const limit int64 = 32 << 20
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("read async image: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, "", errors.New("async image exceeds 32 MiB")
+	}
+	contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
+	detected := strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0])
+	if !strings.HasPrefix(contentType, "image/") && !strings.HasPrefix(detected, "image/") {
+		return nil, "", errors.New("async image URL did not return an image")
+	}
+	return data, studioImageFormatFromBytes(data, contentType), nil
+}
+
+func studioImageFormatFromBytes(data []byte, contentType string) string {
+	if contentType == "" {
+		contentType = strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0])
+	}
+	switch strings.ToLower(contentType) {
+	case "image/jpeg", "image/jpg":
+		return "jpeg"
+	case "image/webp":
+		return "webp"
+	default:
+		return "png"
+	}
+}
+
+func studioAsyncErrorMessage(raw []byte, fallback string) string {
+	if len(raw) > 0 && json.Valid(raw) {
+		var envelope struct {
+			Message string `json:"message"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(raw, &envelope) == nil {
+			if envelope.Error.Message != "" {
+				return envelope.Error.Message
+			}
+			if envelope.Message != "" {
+				return envelope.Message
+			}
+		}
+	}
+	return fallback
 }
 
 func studioUsesOpenAIGateway(mode string, apiKey *service.APIKey) bool {

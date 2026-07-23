@@ -153,6 +153,9 @@ func (r *studioServiceRepoStub) ListMessages(context.Context, int64, string) ([]
 	return nil, nil
 }
 func (r *studioServiceRepoStub) CreateRequest(context.Context, *StudioRequest) error { return nil }
+func (r *studioServiceRepoStub) SetRequestAsyncTask(context.Context, int64, string, string) error {
+	return nil
+}
 func (r *studioServiceRepoStub) CompleteRequest(_ context.Context, _ int64, request *StudioRequest) error {
 	r.completedStatus = request.Status
 	return nil

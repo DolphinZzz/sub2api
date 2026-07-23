@@ -116,8 +116,8 @@ func TestStudioRepositoryCreateRequestRequiresActiveSession(t *testing.T) {
 	mock.ExpectExec("INSERT INTO studio_requests").
 		WithArgs(
 			request.ID, request.SessionID, request.UserID, request.TurnID, request.APIKeyID,
-			request.APIKeyName, request.Endpoint, request.Model, request.Status, request.RequestPath,
-			request.ResponsePath, request.DurationMS, request.ErrorCode, request.ErrorMessage,
+			request.APIKeyName, request.Endpoint, request.Model, request.Status, request.AsyncTaskID,
+			request.RequestPath, request.ResponsePath, request.DurationMS, request.ErrorCode, request.ErrorMessage,
 			request.CreatedAt, request.UpdatedAt, request.CompletedAt, service.StudioSessionStatusActive,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))

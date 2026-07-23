@@ -300,7 +300,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	}
 	studioService := service.ProvideStudioService(studioRepository, studioFileStorage, apiKeyService, configConfig)
 	apiKeyAuthMiddleware := middleware.NewAPIKeyAuthMiddleware(apiKeyService, subscriptionService, configConfig)
-	studioHandler := handler.NewStudioHandler(studioService, settingService, gatewayHandler, openAIGatewayHandler, apiKeyAuthMiddleware, configConfig)
+	studioHandler := handler.NewStudioHandler(studioService, settingService, gatewayHandler, openAIGatewayHandler, asyncImageHandler, apiKeyAuthMiddleware, configConfig)
 	idempotencyCoordinator := service.ProvideIdempotencyCoordinator(idempotencyRepository, configConfig)
 	idempotencyCleanupService := service.ProvideIdempotencyCleanupService(idempotencyRepository, configConfig)
 	handlers := handler.ProvideHandlers(authHandler, userHandler, apiKeyHandler, usageHandler, redeemHandler, subscriptionHandler, announcementHandler, channelMonitorUserHandler, adminHandlers, gatewayHandler, openAIGatewayHandler, handlerSettingHandler, totpHandler, handlerPaymentHandler, paymentWebhookHandler, availableChannelHandler, asyncImageHandler, batchImageHandler, studioHandler, idempotencyCoordinator, idempotencyCleanupService)

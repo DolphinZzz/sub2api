@@ -64,6 +64,19 @@ export interface StudioPersistedEvent {
   asset_ids?: string[]
 }
 
+export interface StudioImageTask {
+  id: string
+  taskId: string
+  requestId: string
+  status: 'processing' | 'completed' | 'failed' | string
+  httpStatus?: number
+  persisted: boolean
+  errorMessage?: string
+  createdAt?: number
+  completedAt?: number
+  expiresAt?: number
+}
+
 export interface StudioStreamHandlers {
   onTextDelta?: (delta: string) => void
   onPersisted?: (event: StudioPersistedEvent) => void
@@ -136,15 +149,16 @@ function normalizeImage(value: unknown): StudioImageData | null {
 function imageOptionsFromPayload(value: unknown): StudioRequestSummary['image'] | undefined {
   const payload = record(value)
   const tool = record(arrayValue(payload.tools)[0])
-  if (tool.type !== 'image_generation') return undefined
+  if (tool.type !== 'image_generation' && !stringValue(payload.prompt)) return undefined
+  const direct = tool.type === 'image_generation' ? tool : payload
   return {
-    action: stringValue(tool.action) || undefined,
-    size: stringValue(tool.size) || undefined,
-    aspectRatio: stringValue(tool.aspect_ratio) || undefined,
-    quality: stringValue(tool.quality) || undefined,
-    background: stringValue(tool.background) || undefined,
-    outputFormat: stringValue(tool.output_format) || undefined,
-    count: numberValue(tool.n) ?? undefined,
+    action: stringValue(direct.action) || (arrayValue(payload.images).length ? 'edit' : 'generate'),
+    size: stringValue(direct.size) || undefined,
+    aspectRatio: stringValue(direct.aspect_ratio) || (stringValue(direct.size) ? imageAspectRatioForSize(stringValue(direct.size)) : undefined),
+    quality: stringValue(direct.quality) || undefined,
+    background: stringValue(direct.background) || undefined,
+    outputFormat: stringValue(direct.output_format) || undefined,
+    count: numberValue(direct.n) ?? undefined,
   }
 }
 
@@ -159,6 +173,7 @@ export function normalizeStudioRequest(value: unknown): StudioRequestSummary {
     apiKeyName: stringValue(source.api_key_name ?? source.apiKeyName),
     model: stringValue(source.model) || stringValue(record(requestBody).model),
     status: stringValue(source.status, 'unknown'),
+    asyncTaskId: stringValue(source.async_task_id ?? source.asyncTaskId) || undefined,
     durationMs: numberValue(source.duration_ms ?? source.durationMs),
     errorCode: stringValue(source.error_code ?? source.errorCode) || undefined,
     errorMessage: stringValue(source.error_message ?? source.errorMessage) || undefined,
@@ -334,6 +349,76 @@ export function buildImagePayload(model: string, prompt: string, options: Studio
     tool_choice: { type: 'image_generation' },
     stream: true,
     store: false,
+  }
+}
+
+export function buildAsyncImagePayload(prompt: string, options: StudioImageOptions) {
+  const payload: Record<string, unknown> = {
+    model: 'gpt-image-2',
+    prompt,
+    size: imageSizeForAspectRatio(options.size, options.aspectRatio),
+    quality: options.quality,
+    background: options.background,
+    output_format: options.outputFormat,
+  }
+  if (options.action === 'edit') {
+    payload.images = options.referenceImages.slice(0, 5).map((imageUrl) => ({ image_url: imageUrl }))
+  }
+  return payload
+}
+
+function normalizeStudioImageTask(value: unknown): StudioImageTask {
+  const source = record(value)
+  const error = record(source.error)
+  return {
+    id: stringValue(source.id ?? source.task_id),
+    taskId: stringValue(source.task_id ?? source.id),
+    requestId: stringValue(source.request_id),
+    status: stringValue(source.status, 'failed'),
+    httpStatus: numberValue(source.http_status) ?? undefined,
+    persisted: source.persisted === true,
+    errorMessage: stringValue(error.message) || undefined,
+    createdAt: numberValue(source.created_at) ?? undefined,
+    completedAt: numberValue(source.completed_at) ?? undefined,
+    expiresAt: numberValue(source.expires_at) ?? undefined,
+  }
+}
+
+export async function submitStudioImage(sessionId: string, envelope: StudioResponseEnvelope, signal?: AbortSignal): Promise<StudioImageTask> {
+  const { data } = await apiClient.post<unknown>(
+    `/studio/sessions/${encodeURIComponent(sessionId)}/images/async`,
+    envelope,
+    { signal, timeout: 0 },
+  )
+  return normalizeStudioImageTask(data)
+}
+
+export async function getStudioImageTask(requestId: string, signal?: AbortSignal): Promise<StudioImageTask> {
+  const { data } = await apiClient.get<unknown>(
+    `/studio/requests/${encodeURIComponent(requestId)}/image-task`,
+    { signal, timeout: 0 },
+  )
+  return normalizeStudioImageTask(data)
+}
+
+export async function waitForStudioImageTask(requestId: string, signal?: AbortSignal): Promise<StudioImageTask> {
+  while (true) {
+    const task = await getStudioImageTask(requestId, signal)
+    if (task.status !== 'processing' && task.status !== 'completed') {
+      throw new Error(task.errorMessage || '图片生成失败')
+    }
+    if (task.status === 'completed' && task.persisted) return task
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        window.clearTimeout(timer)
+        reject(new DOMException('Aborted', 'AbortError'))
+      }
+      const timer = window.setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }, 3000)
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
   }
 }
 

@@ -17,6 +17,7 @@ export interface StudioRequestSummary {
   apiKeyName: string
   model: string
   status: string
+  asyncTaskId?: string
   durationMs: number | null
   errorCode?: string
   errorMessage?: string

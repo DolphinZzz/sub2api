@@ -74,6 +74,10 @@ func TestStudioServicePersistOutputImageLeavesOtherQualitiesUnchanged(t *testing
 	require.Equal(t, source, storage.outputData)
 }
 
+func TestStudioImageRequestQualitySupportsAsyncImagesPayload(t *testing.T) {
+	require.Equal(t, "low", studioImageRequestQuality(json.RawMessage(`{"model":"gpt-image-2","quality":"low"}`)))
+}
+
 func noisyStudioTestPNG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	img := image.NewNRGBA(image.Rect(0, 0, width, height))

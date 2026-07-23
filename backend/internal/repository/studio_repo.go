@@ -158,15 +158,15 @@ func (r *studioRepository) CreateRequest(ctx context.Context, request *service.S
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO studio_requests
 			(id, session_id, user_id, turn_id, api_key_id, api_key_name, endpoint, model, status,
-			 request_path, response_path, duration_ms, error_code, error_message, created_at, updated_at, completed_at)
+			 async_task_id, request_path, response_path, duration_ms, error_code, error_message, created_at, updated_at, completed_at)
 		SELECT $1::varchar, $2::varchar, $3::bigint, $4::varchar, $5::bigint, $6::varchar, $7::varchar,
-			$8::varchar, $9::varchar, $10::varchar, $11::varchar, $12::bigint, $13::varchar, $14::text,
-			$15::timestamptz, $16::timestamptz, $17::timestamptz
+			$8::varchar, $9::varchar, $10::varchar, $11::varchar, $12::varchar, $13::bigint, $14::varchar, $15::text,
+			$16::timestamptz, $17::timestamptz, $18::timestamptz
 		FROM studio_sessions
-		WHERE id = $2::varchar AND user_id = $3::bigint AND status = $18::varchar`,
+		WHERE id = $2::varchar AND user_id = $3::bigint AND status = $19::varchar`,
 		request.ID, request.SessionID, request.UserID, request.TurnID, request.APIKeyID,
-		request.APIKeyName, request.Endpoint, request.Model, request.Status, request.RequestPath,
-		request.ResponsePath, request.DurationMS, request.ErrorCode, request.ErrorMessage,
+		request.APIKeyName, request.Endpoint, request.Model, request.Status, request.AsyncTaskID,
+		request.RequestPath, request.ResponsePath, request.DurationMS, request.ErrorCode, request.ErrorMessage,
 		request.CreatedAt, request.UpdatedAt, request.CompletedAt, service.StudioSessionStatusActive,
 	)
 	if err != nil {
@@ -195,6 +195,18 @@ func (r *studioRepository) CreateRequest(ctx context.Context, request *service.S
 	return nil
 }
 
+func (r *studioRepository) SetRequestAsyncTask(ctx context.Context, userID int64, requestID, taskID string) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE studio_requests
+		SET async_task_id = $3, updated_at = NOW()
+		WHERE user_id = $1 AND id = $2 AND status = $4`,
+		userID, requestID, taskID, service.StudioRequestRunning)
+	if err != nil {
+		return fmt.Errorf("set studio request async task: %w", err)
+	}
+	return studioRequireAffected(result, "request")
+}
+
 func (r *studioRepository) CompleteRequest(ctx context.Context, userID int64, request *service.StudioRequest) error {
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE studio_requests
@@ -213,7 +225,7 @@ func (r *studioRepository) CompleteRequest(ctx context.Context, userID int64, re
 func (r *studioRepository) GetRequest(ctx context.Context, userID int64, id string) (*service.StudioRequest, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, session_id, user_id, turn_id, api_key_id, api_key_name, endpoint, model, status,
-			request_path, response_path, duration_ms, error_code, error_message, created_at, updated_at, completed_at
+			async_task_id, request_path, response_path, duration_ms, error_code, error_message, created_at, updated_at, completed_at
 		FROM studio_requests
 		WHERE user_id = $1 AND id = $2`, userID, id)
 	var request service.StudioRequest
@@ -395,16 +407,19 @@ func scanStudioMessage(row studioScanner, message *service.StudioMessage) error 
 
 func scanStudioRequest(row studioScanner, request *service.StudioRequest) error {
 	var apiKeyID, duration sql.NullInt64
-	var responsePath, errorCode, errorMessage sql.NullString
+	var asyncTaskID, responsePath, errorCode, errorMessage sql.NullString
 	var completedAt sql.NullTime
 	if err := row.Scan(&request.ID, &request.SessionID, &request.UserID, &request.TurnID,
 		&apiKeyID, &request.APIKeyName, &request.Endpoint, &request.Model, &request.Status,
-		&request.RequestPath, &responsePath, &duration, &errorCode, &errorMessage,
+		&asyncTaskID, &request.RequestPath, &responsePath, &duration, &errorCode, &errorMessage,
 		&request.CreatedAt, &request.UpdatedAt, &completedAt); err != nil {
 		return fmt.Errorf("scan studio request: %w", err)
 	}
 	if apiKeyID.Valid {
 		request.APIKeyID = &apiKeyID.Int64
+	}
+	if asyncTaskID.Valid {
+		request.AsyncTaskID = &asyncTaskID.String
 	}
 	if responsePath.Valid {
 		request.ResponsePath = &responsePath.String

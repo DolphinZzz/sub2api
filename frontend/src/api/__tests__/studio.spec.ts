@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildChatPayload,
+  buildAsyncImagePayload,
   buildImagePayload,
   consumeResponsesEvent,
   imageAspectRatioForSize,
@@ -89,6 +90,46 @@ describe('studio API helpers', () => {
     expect(payload.tools[0]).not.toHaveProperty('aspect_ratio')
     expect(payload.model).toBe('gpt-5.5')
     expect(payload.tool_choice).toEqual({ type: 'image_generation' })
+  })
+
+  it('builds an asynchronous Images generation payload with hard controls', () => {
+    const payload = buildAsyncImagePayload('draw a cat', {
+      action: 'generate',
+      size: '1024x1024',
+      aspectRatio: '16:9',
+      quality: 'high',
+      background: 'auto',
+      outputFormat: 'webp',
+      referenceImages: [],
+    })
+    expect(payload).toEqual({
+      model: 'gpt-image-2',
+      prompt: 'draw a cat',
+      size: '2048x1152',
+      quality: 'high',
+      background: 'auto',
+      output_format: 'webp',
+    })
+    expect(payload).not.toHaveProperty('response_format')
+    expect(payload).not.toHaveProperty('moderation')
+  })
+
+  it('builds an asynchronous Images edit payload with references', () => {
+    expect(buildAsyncImagePayload('edit it', {
+      action: 'edit',
+      size: '1024x1024',
+      aspectRatio: '1:1',
+      quality: 'low',
+      background: 'transparent',
+      outputFormat: 'png',
+      referenceImages: ['data:image/png;base64,a', 'data:image/png;base64,b'],
+    })).toMatchObject({
+      model: 'gpt-image-2',
+      images: [
+        { image_url: 'data:image/png;base64,a' },
+        { image_url: 'data:image/png;base64,b' },
+      ],
+    })
   })
 
   it('encodes the selected aspect ratio using an allowed size', () => {

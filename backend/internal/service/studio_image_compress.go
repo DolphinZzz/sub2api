@@ -23,13 +23,17 @@ var studioLowJPEGQualities = []int{65, 50, 35, 25}
 
 func studioImageRequestQuality(payload json.RawMessage) string {
 	var body struct {
-		Tools []struct {
+		Quality string `json:"quality"`
+		Tools   []struct {
 			Type    string `json:"type"`
 			Quality string `json:"quality"`
 		} `json:"tools"`
 	}
 	if json.Unmarshal(payload, &body) != nil {
 		return ""
+	}
+	if body.Quality != "" {
+		return body.Quality
 	}
 	for _, tool := range body.Tools {
 		if tool.Type == "image_generation" {

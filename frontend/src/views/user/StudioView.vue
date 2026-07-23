@@ -115,7 +115,8 @@
               </label>
               <label class="min-w-0">
                 <span class="mb-1 block text-[11px] font-medium text-gray-500 dark:text-dark-400">{{ t('studio.model') }}</span>
-                <Select v-model="selectedModel" :options="modelOptions" class="w-full" />
+                <Select v-if="mode === 'chat'" v-model="selectedModel" :options="modelOptions" class="w-full" />
+                <Select v-else model-value="gpt-image-2" :options="imageModelOptions" :disabled="true" class="w-full" />
               </label>
             </div>
           </div>
@@ -290,8 +291,8 @@ import ControlSelect from '@/components/studio/ControlSelect.vue'
 import { keysAPI } from '@/api/keys'
 import { buildGatewayUrl } from '@/api/client'
 import {
+  buildAsyncImagePayload,
   buildChatPayload,
-  buildImagePayload,
   createStudioSession,
   deleteStudioSession,
   fetchStudioAsset,
@@ -301,8 +302,10 @@ import {
   imageSizeForAspectRatio,
   listStudioSessions,
   requestStudioResponse,
+  submitStudioImage,
   STUDIO_IMAGE_ASPECT_RATIOS,
   STUDIO_IMAGE_SIZES,
+  waitForStudioImageTask,
 } from '@/api/studio'
 import { useAppStore } from '@/stores/app'
 import type { ApiKey } from '@/types'
@@ -357,6 +360,7 @@ const modelOptions = [
   { value: 'gpt-5.6-terra', label: 'gpt-5.6 terra' },
   { value: 'gpt-5.6-luna', label: 'gpt-5.6 luna' },
 ]
+const imageModelOptions = [{ value: 'gpt-image-2', label: 'gpt-image-2' }]
 const sizeOptions = STUDIO_IMAGE_SIZES.map((value) => ({ value, label: value.replace('x', ' × ') }))
 const ratioOptions = ['1:1', '2:3', '3:2', '3:4', '4:3', '5:4', '4:5', '9:16', '16:9', '9:21', '21:9']
   .map((value) => ({ value, label: value, disabled: !STUDIO_IMAGE_ASPECT_RATIOS.includes(value) }))
@@ -569,13 +573,13 @@ async function generateImages() {
 
   try {
     for (let index = 0; index < imageCount.value; index += 1) {
-      const persisted = await requestStudioResponse(
+      const task = await submitStudioImage(
         session.id,
         {
           turn_id: turnId,
           api_key_id: key.id,
           endpoint: selectedEndpoint.value,
-          payload: buildImagePayload(selectedModel.value, text, {
+          payload: buildAsyncImagePayload(text, {
             action: imageAction.value,
             size: imageSize.value,
             aspectRatio: aspectRatio.value,
@@ -585,10 +589,10 @@ async function generateImages() {
             referenceImages: referenceImages.value.map((reference) => reference.preview),
           }),
         },
-        {},
         controller.signal,
       )
-      if (!persisted) throw new Error(t('studio.persistenceFailed'))
+      if (!task.requestId) throw new Error(t('studio.persistenceFailed'))
+      await waitForStudioImageTask(task.requestId, controller.signal)
       const refreshed = await reloadSession(session.id)
       const images = refreshed.messages.find((message) => message.turnId === turnId && message.role === 'assistant')?.images || []
       if (images.length <= received) throw new Error(t('studio.noImageReturned'))

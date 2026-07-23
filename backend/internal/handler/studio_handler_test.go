@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -145,6 +147,51 @@ func TestStudioCaptureWriter_CancelledRequestStillPersistsTerminalStatus(t *test
 	require.Contains(t, recorder.Body.String(), "data: [DONE]")
 }
 
+func TestStudioAsyncTaskPersistsEscapedSignedURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var receivedQuery string
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("valid-enough-for-storage"))
+	}))
+	defer imageServer.Close()
+
+	repo := &studioHandlerRepoStub{session: service.StudioSession{ID: "session-1", UserID: 42, Title: "image", Mode: "image", Status: service.StudioSessionStatusActive}}
+	storage, err := service.NewStudioFileStorage(&config.Config{Studio: config.StudioConfig{StorageRoot: t.TempDir(), RetentionDays: 30}})
+	require.NoError(t, err)
+	studio := service.NewStudioService(repo, storage, nil, &config.Config{Studio: config.StudioConfig{RetentionDays: 30}})
+	now := time.Now().UTC()
+	rc := &service.StudioRequestContext{
+		Request: &service.StudioRequest{
+			ID: "request-1", SessionID: "session-1", UserID: 42, TurnID: "turn-1",
+			Status: service.StudioRequestRunning, Payload: json.RawMessage(`{"quality":"high","output_format":"png"}`), CreatedAt: now,
+		},
+		UserMessage:      &service.StudioMessage{ID: "user-message", SessionID: "session-1", UserID: 42, Content: "cat"},
+		AssistantMessage: &service.StudioMessage{ID: "assistant-message", SessionID: "session-1", UserID: 42, Role: "assistant", MessageType: "images", Status: "running", CreatedAt: now},
+		StartedAt:        now, RequestContext: context.Background(), Mode: "image",
+	}
+	handler := &StudioHandler{studio: studio, imageClient: imageServer.Client()}
+	task := &service.ImageTask{
+		ID: "imgtask_1", Status: service.ImageTaskStatusCompleted,
+		Result: json.RawMessage(fmt.Sprintf(`{"data":[{"revised_prompt":"cat","url":"%s?a=1\u0026b=2"}]}`, imageServer.URL)),
+	}
+
+	assetIDs, err := handler.persistAsyncTaskImages(context.Background(), rc, task)
+	require.NoError(t, err)
+	require.Equal(t, "a=1&b=2", receivedQuery)
+	require.Len(t, assetIDs, 1)
+	require.Len(t, repo.assets, 1)
+	require.Equal(t, assetIDs[0], repo.assets[0].ID)
+	require.Equal(t, []string{assetIDs[0]}, rc.AssistantMessage.AssetIDs)
+}
+
+func TestStudioAsyncErrorMessageReadsUpstreamEnvelope(t *testing.T) {
+	raw := []byte(`{"error":{"message":"Upstream request failed","type":"upstream_error"}}`)
+	require.Equal(t, "Upstream request failed", studioAsyncErrorMessage(raw, "fallback"))
+	require.Equal(t, "fallback", studioAsyncErrorMessage([]byte("not-json"), "fallback"))
+}
+
 type studioHandlerRepoStub struct {
 	mu          sync.Mutex
 	session     service.StudioSession
@@ -187,6 +234,10 @@ func (r *studioHandlerRepoStub) ListMessages(context.Context, int64, string) ([]
 	return append([]service.StudioMessage(nil), r.messages...), nil
 }
 func (r *studioHandlerRepoStub) CreateRequest(context.Context, *service.StudioRequest) error {
+	return nil
+}
+func (r *studioHandlerRepoStub) SetRequestAsyncTask(_ context.Context, _ int64, _ string, taskID string) error {
+	r.completed.AsyncTaskID = &taskID
 	return nil
 }
 func (r *studioHandlerRepoStub) CompleteRequest(_ context.Context, _ int64, value *service.StudioRequest) error {

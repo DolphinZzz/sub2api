@@ -77,7 +77,9 @@ func RegisterUserRoutes(
 			studio.GET("/sessions/:id", h.Studio.GetSession)
 			studio.DELETE("/sessions/:id", h.Studio.DeleteSession)
 			studio.POST("/sessions/:id/responses", h.Studio.Responses)
+			studio.POST("/sessions/:id/images/async", h.Studio.SubmitImage)
 			studio.GET("/requests/:id", h.Studio.GetRequest)
+			studio.GET("/requests/:id/image-task", h.Studio.GetImageTask)
 			studio.GET("/assets/:id/content", h.Studio.AssetContent)
 		}
 
