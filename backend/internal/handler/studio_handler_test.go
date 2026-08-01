@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -193,7 +192,6 @@ func TestStudioAsyncErrorMessageReadsUpstreamEnvelope(t *testing.T) {
 }
 
 type studioHandlerRepoStub struct {
-	mu          sync.Mutex
 	session     service.StudioSession
 	messages    []service.StudioMessage
 	assets      []service.StudioAsset

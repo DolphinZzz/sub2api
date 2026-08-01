@@ -433,9 +433,10 @@ func (s *StudioService) ResumeRequest(ctx context.Context, userID int64, request
 				message.Content, message.AssetIDs, message.RequestIDs = doc.Content, doc.AssetIDs, doc.RequestIDs
 			}
 		}
-		if message.Role == "user" {
+		switch message.Role {
+		case "user":
 			userMessage = message
-		} else if message.Role == "assistant" {
+		case "assistant":
 			assistantMessage = message
 		}
 	}

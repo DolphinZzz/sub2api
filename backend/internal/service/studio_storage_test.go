@@ -65,7 +65,7 @@ func TestStudioFileStorageWritesAndVerifiesAssets(t *testing.T) {
 	require.Equal(t, "users/1/sessions/s1/images/asset-1.jpeg", outputRel)
 	f, err := store.OpenAsset(context.Background(), outputRel)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	got, err := io.ReadAll(f)
 	require.NoError(t, err)
 	require.Equal(t, data, got)
