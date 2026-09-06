@@ -299,6 +299,13 @@ func prepareNonTransactionalMigration(ctx context.Context, db migrationConnectio
 		return dropInvalidIndexIfPresent(ctx, db, schedulerOutboxPendingDedupKeyIndex)
 	case latestAPIKeyIPIndexMigration:
 		return dropInvalidIndexIfPresent(ctx, db, latestAPIKeyIPIndex)
+	case usageLogsUpstreamModelMismatchIndexMigration:
+		return dropInvalidIndexIfPresent(ctx, db, usageLogsUpstreamModelMismatchIndex)
+	case usageLogsEffectiveModelIndexesMigration:
+		if err := dropInvalidIndexIfPresent(ctx, db, usageLogsEffectiveRequestedModelIndex); err != nil {
+			return err
+		}
+		return dropInvalidIndexIfPresent(ctx, db, usageLogsEffectiveUpstreamModelIndex)
 	default:
 		return nil
 	}

@@ -8,8 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/ent"
@@ -129,7 +129,6 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	if err := initializeDatabaseWithRetry(migrationCtx, func(ctx context.Context) error {
 		return applyMigrationsFS(ctx, drv.DB(), migrations.FS)
 	}); err != nil {
-	if err := applyMigrationsFS(migrationCtx, drv.DB(), migrations.FS); err != nil {
 		if isPostgresDatabaseMissing(err) {
 			_ = drv.Close()
 			if ensureErr := ensurePostgresDatabase(migrationCtx, cfg.Database, cfg.Timezone); ensureErr != nil {

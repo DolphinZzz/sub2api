@@ -675,6 +675,8 @@ type PricingConfig struct {
 	DataDir string `mapstructure:"data_dir"`
 	// 回退文件路径
 	FallbackFile string `mapstructure:"fallback_file"`
+	// 覆盖补丁文件路径（可选）
+	OverrideFile string `mapstructure:"override_file"`
 	// 更新间隔（小时）
 	UpdateIntervalHours int `mapstructure:"update_interval_hours"`
 	// 哈希校验间隔（分钟）
@@ -854,6 +856,46 @@ type ProxyFallbackConfig struct {
 
 type ProxyProbeConfig struct {
 	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"` // 已禁用：禁止跳过 TLS 证书验证
+	// URLs 按优先级排列的自定义探测 URL 列表。
+	// 留空时使用内置默认列表。
+	URLs []ProbeURLConfig `mapstructure:"urls"`
+}
+
+// ProbeURLConfig 描述一个探测端点及其响应解析方式。
+type ProbeURLConfig struct {
+	URL    string `mapstructure:"url"`
+	Parser string `mapstructure:"parser"`
+}
+
+func normalizeProxyProbeURLs(targets []ProbeURLConfig) ([]ProbeURLConfig, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	normalized := make([]ProbeURLConfig, 0, len(targets))
+	for i, target := range targets {
+		rawURL := strings.TrimSpace(target.URL)
+		parser := strings.ToLower(strings.TrimSpace(target.Parser))
+		if rawURL == "" {
+			return nil, fmt.Errorf("entry %d: url is required", i)
+		}
+		if parser == "" {
+			return nil, fmt.Errorf("entry %d: parser is required", i)
+		}
+		switch parser {
+		case "ip-api", "ipify", "chatgpt-trace":
+		default:
+			return nil, fmt.Errorf("entry %d: unsupported parser %q", i, target.Parser)
+		}
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Host == "" {
+			return nil, fmt.Errorf("entry %d: invalid url %q", i, target.URL)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, fmt.Errorf("entry %d: url scheme must be http or https", i)
+		}
+		normalized = append(normalized, ProbeURLConfig{URL: rawURL, Parser: parser})
+	}
+	return normalized, nil
 }
 
 type BillingConfig struct {

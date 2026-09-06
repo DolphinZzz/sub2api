@@ -161,6 +161,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				ResponseBody: []byte(`{"error":{"type":"upstream_capability_error","message":"Selected account does not support the Responses API required by image_generation"}}`),
 			}
 		}
+	}
 	// CN 供应商 anthropic 协议账号：/v1/responses 入站是交叉协议组合
 	// （Responses 客户端 × Anthropic 上游），转成 Anthropic 请求走原生端点。
 	// 不能落到下面的 raw-CC 分支——其 URL 构造会把 anthropic base 当 CC base 用。
@@ -1320,7 +1321,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return forwardResult, nil
 	}
 }
-
 func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {
 	if account == nil || account.Type != AccountTypeAPIKey {
 		return false
