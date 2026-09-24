@@ -115,9 +115,19 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 
 	// 使用 Ent 的 SQL 驱动打开 PostgreSQL 连接。
 	// dialect.Postgres 指定使用 PostgreSQL 方言进行 SQL 生成。
-	drv, err := openPostgresEntDriver(cfg, dsn)
-	if err != nil {
-		return nil, nil, err
+	var drv *entsql.Driver
+	if cfg.Server.EnableServerTiming {
+		connector, err := pq.NewConnector(dsn)
+		if err != nil {
+			return nil, nil, err
+		}
+		drv = entsql.OpenDB(dialect.Postgres, sql.OpenDB(newServerTimingConnector(connector)))
+	} else {
+		var err error
+		drv, err = entsql.Open(dialect.Postgres, dsn)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	applyDBPoolSettings(drv.DB(), cfg)
 
@@ -129,25 +139,10 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	if err := initializeDatabaseWithRetry(migrationCtx, func(ctx context.Context) error {
 		return applyMigrationsFS(ctx, drv.DB(), migrations.FS)
 	}); err != nil {
-		if isPostgresDatabaseMissing(err) {
-			_ = drv.Close()
-			if ensureErr := ensurePostgresDatabase(migrationCtx, cfg.Database, cfg.Timezone); ensureErr != nil {
-				return nil, nil, fmt.Errorf("ensure database %q exists: %w", cfg.Database.DBName, ensureErr)
-			}
-			drv, err = openPostgresEntDriver(cfg, dsn)
-			if err != nil {
-				return nil, nil, err
-			}
-			applyDBPoolSettings(drv.DB(), cfg)
-			if err = applyMigrationsFS(migrationCtx, drv.DB(), migrations.FS); err == nil {
-				goto migrationsApplied
-			}
-		}
 		_ = drv.Close() // 迁移失败时关闭驱动，避免资源泄露
 		return nil, nil, err
 	}
 
-migrationsApplied:
 	// 创建 Ent 客户端，绑定到已配置的数据库驱动。
 	client := ent.NewClient(ent.Driver(drv))
 
@@ -163,23 +158,27 @@ migrationsApplied:
 		return nil, nil, fmt.Errorf("validate config after secret bootstrap: %w", err)
 	}
 
-	// SIMPLE 模式：启动时补齐各平台默认分组。
-	// - anthropic/openai/gemini: 确保存在 <platform>-default
-	// - antigravity: 仅要求存在 >=2 个未软删除分组（用于 claude/gemini 混合调度场景）
-	if cfg.RunMode == config.RunModeSimple {
-		seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer seedCancel()
-		if err := ensureSimpleModeDefaultGroups(seedCtx, client); err != nil {
-			_ = client.Close()
-			return nil, nil, err
-		}
-		if err := ensureSimpleModeAdminConcurrency(seedCtx, client); err != nil {
-			_ = client.Close()
-			return nil, nil, err
-		}
+	seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer seedCancel()
+	if err := ensureSimpleModeStartup(seedCtx, client, cfg); err != nil {
+		_ = client.Close()
+		return nil, nil, err
 	}
 
 	return client, drv.DB(), nil
+}
+
+// ensureSimpleModeStartup keeps admin concurrency setup independent of group seeding.
+func ensureSimpleModeStartup(ctx context.Context, client *ent.Client, cfg *config.Config) error {
+	if cfg.RunMode != config.RunModeSimple {
+		return nil
+	}
+	if cfg.SimpleMode.AutoCreateDefaultGroups {
+		if err := ensureSimpleModeDefaultGroups(ctx, client); err != nil {
+			return err
+		}
+	}
+	return ensureSimpleModeAdminConcurrency(ctx, client)
 }
 
 func openPostgresEntDriver(cfg *config.Config, dsn string) (*entsql.Driver, error) {
